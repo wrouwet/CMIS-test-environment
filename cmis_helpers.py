@@ -10,7 +10,19 @@ repeated-start, then read) maps directly onto this.
 
 import time
 
+import pytest
+
 import cmis
+
+
+def require_paged(module_info, what="this page"):
+    """Skip the current test (with a printed reason) if the module
+    reports the Flat memory model -- shared by every test file gating on
+    a page that Table 8-4 says only exists for Paged modules. `what`
+    should name the page(s) being gated, e.g. "Page 01h" or
+    "Pages 10h/11h", for a clear skip message."""
+    if module_info["memory_model"] == cmis.MEMORY_MODEL_FLAT:
+        pytest.skip(f"module reports Flat Memory model -- {what} isn't supported (Table 8-4)")
 
 
 def read_lower_memory(bridge):

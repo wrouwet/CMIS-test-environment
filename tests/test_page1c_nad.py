@@ -14,8 +14,7 @@ import cmis_helpers
 
 def test_page1c_normalized_application_descriptors(bridge, module_info):
     import pytest
-    if module_info["memory_model"] == cmis.MEMORY_MODEL_FLAT:
-        pytest.skip("module reports Flat Memory model -- Page 1Ch isn't supported (Table 8-4)")
+    cmis_helpers.require_paged(module_info, "Page 1Ch")
 
     cmis_helpers.select_page(bridge, bank=0x00, page=cmis.PAGE_ADVERTISING)
     advertising = cmis.parse_page01_advertising(cmis_helpers.read_upper_memory(bridge))

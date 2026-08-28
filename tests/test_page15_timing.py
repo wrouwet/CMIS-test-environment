@@ -18,8 +18,7 @@ def test_page15_timing_characteristics(bridge, module_info):
     says this page's accuracy/update-timing semantics are undefined in
     this revision, so there's no documented "correct" value to check
     against, only "did the read/decode work at all"."""
-    if module_info["memory_model"] == cmis.MEMORY_MODEL_FLAT:
-        pytest.skip("module reports Flat Memory model -- Page 15h isn't supported (Table 8-4)")
+    cmis_helpers.require_paged(module_info, "Page 15h")
 
     cmis_helpers.select_page(bridge, bank=0x00, page=cmis.PAGE_ADVERTISING)
     advertising = cmis.parse_page01_advertising(cmis_helpers.read_upper_memory(bridge))

@@ -6,15 +6,12 @@ status" section. Skipped entirely for Flat Memory modules, which per
 Table 8-4 only ever support Page 00h.
 """
 
-import pytest
-
 import cmis
 import cmis_helpers
 
 
 def _require_paged(module_info):
-    if module_info["memory_model"] == cmis.MEMORY_MODEL_FLAT:
-        pytest.skip("module reports Flat Memory model -- Page 01h isn't supported (Table 8-4)")
+    cmis_helpers.require_paged(module_info, "Page 01h")
 
 
 def test_page01_advertising_and_checksum(bridge, module_info):

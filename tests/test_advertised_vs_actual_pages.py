@@ -17,9 +17,7 @@ import cmis_helpers
 
 
 def test_advertised_pages_match_actual_selectability(bridge, module_info):
-    if module_info["memory_model"] == cmis.MEMORY_MODEL_FLAT:
-        import pytest
-        pytest.skip("module reports Flat Memory model -- Page 01h isn't supported (Table 8-4)")
+    cmis_helpers.require_paged(module_info, "Page 01h")
 
     cmis_helpers.select_page(bridge, bank=0x00, page=cmis.PAGE_ADVERTISING)
     advertising = cmis.parse_page01_advertising(cmis_helpers.read_upper_memory(bridge))

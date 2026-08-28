@@ -28,8 +28,7 @@ def _require_cdb(bridge, module_info):
     """Returns the decoded Page 01h advertising dict if the module
     supports paging AND advertises at least one CDB instance; skips
     (with a printed reason) otherwise."""
-    if module_info["memory_model"] == cmis.MEMORY_MODEL_FLAT:
-        pytest.skip("module reports Flat Memory model -- CDB (Page 9Fh) isn't supported (Table 8-4)")
+    cmis_helpers.require_paged(module_info, "CDB (Page 9Fh)")
 
     cmis_helpers.select_page(bridge, bank=0x00, page=cmis.PAGE_ADVERTISING)
     advertising = cmis.parse_page01_advertising(cmis_helpers.read_upper_memory(bridge))

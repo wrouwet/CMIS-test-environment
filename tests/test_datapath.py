@@ -9,15 +9,12 @@ Bank 0 only (lanes 1-8) -- sufficient for any module with up to 8 lanes
 handled here yet.
 """
 
-import pytest
-
 import cmis
 import cmis_helpers
 
 
 def _require_paged(module_info):
-    if module_info["memory_model"] == cmis.MEMORY_MODEL_FLAT:
-        pytest.skip("module reports Flat Memory model -- Pages 10h/11h aren't supported (Table 8-4)")
+    cmis_helpers.require_paged(module_info, "Pages 10h/11h")
 
 
 def test_page11_lane_status(bridge, module_info):

@@ -16,8 +16,7 @@ import cmis_helpers
 
 
 def test_page12_tunable_laser_status(bridge, module_info):
-    if module_info["memory_model"] == cmis.MEMORY_MODEL_FLAT:
-        pytest.skip("module reports Flat Memory model -- Page 12h isn't supported (Table 8-4)")
+    cmis_helpers.require_paged(module_info, "Page 12h")
 
     cmis_helpers.select_page(bridge, bank=0x00, page=cmis.PAGE_ADVERTISING)
     advertising = cmis.parse_page01_advertising(cmis_helpers.read_upper_memory(bridge))

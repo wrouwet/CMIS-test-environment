@@ -9,8 +9,6 @@ status" section. Skipped entirely for Flat Memory modules (Page 02h
 isn't supported, Table 8-4).
 """
 
-import pytest
-
 import cmis
 import cmis_helpers
 
@@ -21,8 +19,7 @@ def test_temp_and_vcc_within_warning_thresholds(bridge, module_info):
     decoding mismatch -- either way, worth failing loudly rather than
     silently printing, unlike this project's other threshold tests which
     only check internal ordering without a live value to compare against."""
-    if module_info["memory_model"] == cmis.MEMORY_MODEL_FLAT:
-        pytest.skip("module reports Flat Memory model -- Page 02h isn't supported (Table 8-4)")
+    cmis_helpers.require_paged(module_info, "Page 02h")
 
     took = cmis_helpers.try_select_page(bridge, bank=0x00, page=cmis.PAGE_THRESHOLDS)
     assert took, "Page 02h is mandatory for a Paged-memory module but did not read back as selected"

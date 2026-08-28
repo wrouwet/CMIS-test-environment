@@ -55,8 +55,7 @@ def test_enter_password_via_cdb(bridge, module_info):
     Status (0000h) and check the reply's unlock_level field (Table 9-3)
     actually reports 'host_password_accepted'. Skipped if the module
     doesn't advertise CDB support at all."""
-    if module_info["memory_model"] == cmis.MEMORY_MODEL_FLAT:
-        pytest.skip("module reports Flat Memory model -- CDB (Page 9Fh) isn't supported (Table 8-4)")
+    cmis_helpers.require_paged(module_info, "CDB (Page 9Fh)")
 
     cmis_helpers.select_page(bridge, bank=0x00, page=cmis.PAGE_ADVERTISING)
     advertising = cmis.parse_page01_advertising(cmis_helpers.read_upper_memory(bridge))

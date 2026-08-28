@@ -21,8 +21,7 @@ def test_page14_error_counters(bridge, module_info):
     project can fully decode this selector (plain U64 counters, Table
     8-116) without needing CMIS's F16 float format, unlike the BER/SNR
     selectors (see cmis.parse_page14_status()'s docstring)."""
-    if module_info["memory_model"] == cmis.MEMORY_MODEL_FLAT:
-        pytest.skip("module reports Flat Memory model -- Page 14h isn't supported (Table 8-4)")
+    cmis_helpers.require_paged(module_info, "Page 14h")
 
     cmis_helpers.select_page(bridge, bank=0x00, page=cmis.PAGE_ADVERTISING)
     advertising = cmis.parse_page01_advertising(cmis_helpers.read_upper_memory(bridge))
@@ -47,8 +46,7 @@ def test_page14_ber(bridge, module_info):
     (little-endian, matching this page's error counters) is flagged as
     an inference in cmis.parse_page14_ber()'s docstring, not an
     independently confirmed fact."""
-    if module_info["memory_model"] == cmis.MEMORY_MODEL_FLAT:
-        pytest.skip("module reports Flat Memory model -- Page 14h isn't supported (Table 8-4)")
+    cmis_helpers.require_paged(module_info, "Page 14h")
 
     cmis_helpers.select_page(bridge, bank=0x00, page=cmis.PAGE_ADVERTISING)
     advertising = cmis.parse_page01_advertising(cmis_helpers.read_upper_memory(bridge))
@@ -72,8 +70,7 @@ def test_page14_snr(bridge, module_info):
     """Select the SNR selector and decode it -- plain scaled U16, no F16
     involved (unlike BER), and this byte-order/scale was confirmed
     directly from the fetched spec text rather than inferred."""
-    if module_info["memory_model"] == cmis.MEMORY_MODEL_FLAT:
-        pytest.skip("module reports Flat Memory model -- Page 14h isn't supported (Table 8-4)")
+    cmis_helpers.require_paged(module_info, "Page 14h")
 
     cmis_helpers.select_page(bridge, bank=0x00, page=cmis.PAGE_ADVERTISING)
     advertising = cmis.parse_page01_advertising(cmis_helpers.read_upper_memory(bridge))
