@@ -26,8 +26,8 @@ without hardware:
   a real but limited form of confidence: it proves the code does what
   the spec text says, not that the spec text was transcribed correctly,
   and definitely not that a real module actually behaves this way.
-- All 48 tests in `tests/` collect cleanly under pytest (no import/syntax
-  errors) and 47 PASS + 1 correctly SKIPS against `fake_cmis_module.py`'s
+- All 49 tests in `tests/` collect cleanly under pytest (no import/syntax
+  errors) and 48 PASS + 1 correctly SKIPS against `fake_cmis_module.py`'s
   in-memory simulator (`CMIS_USE_FAKE_BRIDGE=1`, see "Dry-running"
   below) -- but none have executed against a real `bridge` fixture /
   real hardware.
@@ -115,7 +115,7 @@ expected, not a code bug.
 
 **Dry-running without hardware**: `CMIS_USE_FAKE_BRIDGE=1 .venv/bin/pytest tests/`
 runs the whole suite against `fake_cmis_module.py`, an in-memory CMIS
-module simulator, instead of a real bridge. 47 of 48 tests pass against
+module simulator, instead of a real bridge. 48 of 49 tests pass against
 it as of this writing (1 correctly skips, a Flat-memory-only check
 against a simulator that reports Paged) -- this proves the test code
 itself runs correctly
@@ -261,9 +261,8 @@ guessed):
   added 5.2; 27-34/77-84 added 5.3) via `interpret_vdm_sample()` --
   IDs 100-127 (Custom) and 128-255 (Restricted/OIF) are still
   unavoidably vendor/OIF-specific and not decodable in principle.
-- **Page 14h's SNR selector** (0x06) uses a scaled-U16 format (1/256 dB)
-  -- not implemented; the BER selector (0x01/0x11, F16) and the 4-lane
-  U64 error/bit-counter selectors (0x02-0x05, 0x12-0x15) are decoded.
+- Page 14h now decodes all its non-Custom/non-Reserved selectors: BER
+  (F16), SNR (scaled U16), and the 4-lane U64 error/bit counters.
 - **CMIS's F16 data type** (`cmis.decode_f16()`, used by Page 14h's BER
   selector and several VDM observables) has NO worked example anywhere
   in the fetched spec text (4.0-5.4) -- implemented directly from the
