@@ -24,7 +24,11 @@ def test_page02_thresholds(bridge, module_info):
     if module_info["memory_model"] == cmis.MEMORY_MODEL_FLAT:
         pytest.skip("module reports Flat Memory model -- Page 02h isn't supported (Table 8-4)")
 
-    cmis_helpers.select_page(bridge, bank=0x00, page=cmis.PAGE_THRESHOLDS)
+    took = cmis_helpers.try_select_page(bridge, bank=0x00, page=cmis.PAGE_THRESHOLDS)
+    assert took, (
+        "Page 02h is mandatory for any Paged-memory module (Table 8-4) but did not "
+        "read back as selected"
+    )
     data = cmis_helpers.read_upper_memory(bridge)
 
     decoded = cmis.parse_page02_thresholds(data)

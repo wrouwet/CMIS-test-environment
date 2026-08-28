@@ -137,6 +137,80 @@ VCC_MON_BYTES = (0x10, 0x11)
 BANK_SELECT_BYTE = 0x7E
 PAGE_SELECT_BYTE = 0x7F
 
+# --- CDB status (Section 8.2.8, Table 8-13, p.113) ------------------------
+# CdbCmdCompleteFlag and CdbStatus live in LOWER MEMORY, not Page 9Fh --
+# easy to miss since everything else about CDB lives on Page 9Fh/A0h-AFh.
+# Two independent CDB "instances" are supported by the spec (Page 01h's
+# CdbInstancesSupported can be 1 or 2); this project only ever drives
+# instance 1 (cmis_helpers.send_cdb_command()), so only instance-1 fields
+# are named here -- instance 2's exist at the same bit/byte pattern one
+# position over (bit 7 instead of bit 6 on byte 8; byte 38 instead of 37).
+CDB_CMD_COMPLETE_FLAG_BYTE = 0x08   # byte 8: bit 6 = instance 1, bit 7 = instance 2 (RO/COR)
+CDB_STATUS_1_BYTE = 0x25            # byte 37 (RO)
+CDB_STATUS_2_BYTE = 0x26            # byte 38 (RO)
+
+# CdbStatus byte layout (Table 8-13): bit7=CdbIsBusy, bit6=CdbHasFailed,
+# bits5-0=CdbCommandResult (meaning depends on bits 7-6).
+CDB_RESULT_IN_PROGRESS_CAPTURED = 0x01
+CDB_RESULT_IN_PROGRESS_CHECKING = 0x02
+CDB_RESULT_IN_PROGRESS_EXECUTING = 0x03
+CDB_RESULT_IN_PROGRESS_NAMES = {
+    0x01: "captured, not yet processed",
+    0x02: "command checking in progress",
+    0x03: "command execution in progress",
+}
+CDB_RESULT_SUCCESS_COMPLETED = 0x01
+CDB_RESULT_SUCCESS_ABORTED = 0x03
+CDB_RESULT_SUCCESS_NAMES = {
+    0x01: "completed successfully",
+    0x03: "previous command was ABORTED by CMD Abort",
+}
+CDB_RESULT_FAILED_UNKNOWN_CMDID = 0x01
+CDB_RESULT_FAILED_PARAMETER_RANGE = 0x02
+CDB_RESULT_FAILED_ABORT_INCOMPLETE = 0x03
+CDB_RESULT_FAILED_CHECK_TIMEOUT = 0x04
+CDB_RESULT_FAILED_CHECKSUM_ERROR = 0x05
+CDB_RESULT_FAILED_PASSWORD_ERROR = 0x06
+CDB_RESULT_FAILED_INCOMPATIBLE_STATE = 0x07
+CDB_RESULT_FAILED_NAMES = {
+    0x01: "CMDID unknown",
+    0x02: "parameter range error or parameter not supported",
+    0x03: "previous command was not properly ABORTED",
+    0x04: "command checking time out",
+    0x05: "CdbChkCode error",
+    0x06: "password-related error",
+    0x07: "command not compatible with operating status",
+}
+
+
+def decode_cdb_status(raw_byte):
+    """Decode one CdbStatus byte (Lower Memory 0x25/0x26) per Table 8-13.
+    Returns a dict with the coarse state (busy/success/failed) and, where
+    known, a human-readable meaning for the 6-bit result code -- an
+    unrecognized code is reported as such rather than guessed at (the
+    spec reserves most of the code space, and 0x30-0x3F is explicitly
+    vendor-Custom in every state)."""
+    busy = bool((raw_byte >> 7) & 0x1)
+    failed = bool((raw_byte >> 6) & 0x1)
+    result = raw_byte & 0x3F
+
+    if busy:
+        state = "in_progress"
+        names = CDB_RESULT_IN_PROGRESS_NAMES
+    elif failed:
+        state = "failed"
+        names = CDB_RESULT_FAILED_NAMES
+    else:
+        state = "success"
+        names = CDB_RESULT_SUCCESS_NAMES
+
+    if 0x30 <= result <= 0x3F:
+        meaning = "vendor-custom result code"
+    else:
+        meaning = names.get(result, "reserved/undefined result code")
+
+    return {"busy": busy, "failed": failed, "result_code": result, "state": state, "meaning": meaning}
+
 # --- Password mechanism (Section 8.2.12, p.117-118) -----------------------
 # Two INDEPENDENT ways to unlock/change password-protected features exist:
 # this direct register-write mechanism, and a CDB-command mechanism (CDB
@@ -192,6 +266,7 @@ def parse_lower_memory(data):
     if temp_raw >= 0x8000:
         temp_raw -= 0x10000  # signed 16-bit
     vcc_raw = (data[VCC_MON_BYTES[0]] << 8) | data[VCC_MON_BYTES[1]]
+    cdb_complete_byte = data[CDB_CMD_COMPLETE_FLAG_BYTE]
 
     return {
         "identifier": data[SFF8024_IDENTIFIER_BYTE],
@@ -206,6 +281,10 @@ def parse_lower_memory(data):
         "vcc_v": vcc_raw * 100e-6,
         "bank_select": data[BANK_SELECT_BYTE],
         "page_select": data[PAGE_SELECT_BYTE],
+        "cdb_cmd_complete_1": bool((cdb_complete_byte >> 6) & 0x1),
+        "cdb_cmd_complete_2": bool((cdb_complete_byte >> 7) & 0x1),
+        "cdb_status_1": decode_cdb_status(data[CDB_STATUS_1_BYTE]),
+        "cdb_status_2": decode_cdb_status(data[CDB_STATUS_2_BYTE]),
     }
 
 
@@ -290,6 +369,7 @@ PAGE_TUNABLE_LASER = 0x12      # banked
 PAGE_DIAG_CONTROL = 0x13       # banked
 PAGE_DIAG_RESULTS = 0x14       # banked
 PAGE_TIMING_CHARACTERISTICS = 0x15  # banked
+PAGE_USER_EEPROM_MAX_WRITE_BYTES = 8  # Section 8.6: max bytes per write to Page 03h
 PAGE_VDM_DESCRIPTORS_BASE = 0x20    # 0x20-0x23, one per VDM group (1-4)
 PAGE_VDM_SAMPLES_BASE = 0x24        # 0x24-0x27
 PAGE_VDM_THRESHOLDS_BASE = 0x28     # 0x28-0x2B
@@ -305,7 +385,33 @@ PAGE_CDB_EPL_BASE = 0xA0             # 0xA0-0xAF, 16 x 128-byte EPL segments
 # module, per Table 8-4.
 PAGE01_INACTIVE_FW_REV = (0x80, 2)   # bytes 128-129: major, minor
 PAGE01_INACTIVE_HW_REV = (0x82, 2)   # bytes 130-131: major, minor
-PAGE01_SUPPORTED_PAGES_BYTE = 0x8E   # byte 142: bitmap of which optional pages exist
+
+# Byte 142 (Table 8-40 "Supported Pages Advertising") -- confirmed bit-by-bit:
+PAGE01_SUPPORTED_PAGES_BYTE = 0x8E
+PAGE01_SUPPORTED_PAGES_VDM_BIT = 6        # Pages 20h-2Fh (partially) supported
+PAGE01_SUPPORTED_PAGES_DIAG_BIT = 5       # banked Pages 13h/14h supported
+PAGE01_SUPPORTED_PAGES_PAGE03_BIT = 2     # Page 03h (User EEPROM) supported
+PAGE01_SUPPORTED_PAGES_BANKS_MASK = 0x3   # bits 1-0: BanksSupported
+BANKS_SUPPORTED_NAMES = {
+    0b00: "Bank 0 only (8 lanes)",
+    0b01: "Banks 0-1 (16 lanes)",
+    0b10: "Banks 0-3 (32 lanes)",
+    0b11: "Reserved",
+}
+
+# Byte 145 (Table 8-43 "Module Characteristics Advertising") -- confirmed
+# bit-by-bit (only the bits this project currently surfaces are named):
+PAGE01_MODULE_CHARACTERISTICS_BYTE = 0x91
+PAGE01_MODCHAR_COOLING_IMPLEMENTED_BIT = 7
+PAGE01_MODCHAR_EPPS_SUPPORTED_BIT = 4
+PAGE01_MODCHAR_TIMING_PAGE15H_SUPPORTED_BIT = 3
+
+# Byte 155 (Table 8-44 "Supported Controls Advertisement") -- confirmed
+# bit-by-bit (only the bits this project currently surfaces are named):
+PAGE01_SUPPORTED_CONTROLS_BYTE = 0x9B
+PAGE01_SUPCTL_WAVELENGTH_CONTROLLABLE_BIT = 7
+PAGE01_SUPCTL_TRANSMITTER_TUNABLE_BIT = 6  # 1 => Pages 04h and 12h supported
+
 PAGE01_CDB_FUNCTIONALITY = (0xA3, 4)  # bytes 163-166 (Table 8-48)
 # Checksum coverage is DELIBERATELY DIFFERENT from Page 00h's: it excludes
 # bytes 128-129 (InactiveFirmwareRevision), "to avoid requiring a Memory
@@ -333,11 +439,23 @@ def parse_page01_advertising(data):
 
     cdb_off, _ = PAGE01_CDB_FUNCTIONALITY
     cdb0 = _u8(cdb_off)
+    supported_pages = _u8(PAGE01_SUPPORTED_PAGES_BYTE)
+    modchar = _u8(PAGE01_MODULE_CHARACTERISTICS_BYTE)
+    supctl = _u8(PAGE01_SUPPORTED_CONTROLS_BYTE)
 
     return {
         "inactive_fw_rev": (_u8(PAGE01_INACTIVE_FW_REV[0]), _u8(PAGE01_INACTIVE_FW_REV[0] + 1)),
         "inactive_hw_rev": (_u8(PAGE01_INACTIVE_HW_REV[0]), _u8(PAGE01_INACTIVE_HW_REV[0] + 1)),
-        "supported_pages_byte": _u8(PAGE01_SUPPORTED_PAGES_BYTE),
+        "supported_pages_byte": supported_pages,
+        "vdm_pages_supported": bool((supported_pages >> PAGE01_SUPPORTED_PAGES_VDM_BIT) & 0x1),
+        "diagnostic_pages_supported": bool((supported_pages >> PAGE01_SUPPORTED_PAGES_DIAG_BIT) & 0x1),
+        "page03_user_eeprom_supported": bool((supported_pages >> PAGE01_SUPPORTED_PAGES_PAGE03_BIT) & 0x1),
+        "banks_supported": supported_pages & PAGE01_SUPPORTED_PAGES_BANKS_MASK,
+        "cooling_implemented": bool((modchar >> PAGE01_MODCHAR_COOLING_IMPLEMENTED_BIT) & 0x1),
+        "epps_supported": bool((modchar >> PAGE01_MODCHAR_EPPS_SUPPORTED_BIT) & 0x1),
+        "timing_page15h_supported": bool((modchar >> PAGE01_MODCHAR_TIMING_PAGE15H_SUPPORTED_BIT) & 0x1),
+        "wavelength_controllable": bool((supctl >> PAGE01_SUPCTL_WAVELENGTH_CONTROLLABLE_BIT) & 0x1),
+        "transmitter_tunable": bool((supctl >> PAGE01_SUPCTL_TRANSMITTER_TUNABLE_BIT) & 0x1),
         "cdb_instances_supported": (cdb0 >> 6) & 0x3,
         "cdb_background_mode_supported": bool((cdb0 >> 5) & 0x1),
         "cdb_auto_paging_supported": bool((cdb0 >> 4) & 0x1),
@@ -477,6 +595,195 @@ def parse_page11_lane_status(data):
     return {"dp_state": dp_states, "output_status": output_status}
 
 
+# --- VDM: Versatile Diagnostic Monitoring (Section 8.14, Tables 8-119 --
+# through 8-128, p.201). Optional, advertised by Page 01h's
+# vdm_pages_supported bit (byte 142 bit 6). Up to 256 "instances" across 4
+# groups of 64, each either unused or bound (via its descriptor) to one
+# observable quantity. All VDM multi-byte values are BIG ENDIAN (the spec
+# explicitly calls this out as differing from the Page 13h/14h Module
+# Diagnostics registers).
+PAGE_VDM_DESCRIPTORS = (0x20, 0x21, 0x22, 0x23)  # one page per group (1-4), 64 x 2B descriptors/page
+PAGE_VDM_SAMPLES = (0x24, 0x25, 0x26, 0x27)      # 64 x 2B (X16) samples/page
+PAGE_VDM_THRESHOLDS = (0x28, 0x29, 0x2A, 0x2B)   # 16 x 8B (4x2B quad) threshold sets/page
+
+# VDM Instance Descriptor (Table 8-121): 2 bytes/instance.
+#   even byte: bits 7-4 = LocalThresholdSetID, bits 3-0 = MonitoredResource
+#   odd byte:  ObservableType (full byte, indexes VDM_OBSERVABLE_TYPE_NAMES)
+VDM_MONITORED_RESOURCE_MODULE_WIDE = 0xF  # 0-7 = Lane/DataPath 1-8; 15 = module-wide
+
+# Global ThresholdSetID = per-group offset + LocalThresholdSetID (Table 8-121's
+# own worked mapping) -- lets a threshold set be referenced unambiguously
+# across groups, since each group's Page 28h-2Bh only holds 16 local sets.
+VDM_THRESHOLD_SET_GROUP_OFFSET = {0x20: 1, 0x21: 17, 0x22: 33, 0x23: 49}
+
+# ObservableType values confirmed by name in the fetched text (Table
+# 8-122) -- NOT a complete table (the full ID 3-99 range wasn't extracted).
+# Data Type (U16/S16/F16) is a property of the Observable Type itself, per
+# the spec -- NOT a separate descriptor field -- so full numeric decoding
+# of a sample requires knowing every ID's data type, which this project
+# doesn't have yet for most IDs. parse_vdm_sample() below returns the raw
+# 16-bit value plus this name (or "unknown (not yet catalogued)") rather
+# than guessing a data type for an uncatalogued ID.
+VDM_OBSERVABLE_TYPE_NAMES = {
+    0x00: "NotUsed (instance is passive/unused)",
+    0x01: "LaserAge (Basic, U16)",
+    0x02: "TECCurrent (Basic, S16)",
+    # IDs 9-24: Pre-FEC BER / FERC (min/max/avg/current), Basic or
+    # Statistic, Data Type F16 -- exact per-ID assignment within 9-24 not
+    # extracted from the fetched text; reported generically if seen.
+}
+VDM_OBSERVABLE_TYPE_PRE_FEC_BER_RANGE = range(0x09, 0x19)  # 9-24 inclusive
+
+
+def parse_vdm_descriptor(even_byte, odd_byte):
+    """Decode one 2-byte VDM Instance Descriptor (Table 8-121)."""
+    local_threshold_set_id = (even_byte >> 4) & 0xF
+    monitored_resource = even_byte & 0xF
+    observable_type = odd_byte
+
+    if observable_type in VDM_OBSERVABLE_TYPE_NAMES:
+        type_name = VDM_OBSERVABLE_TYPE_NAMES[observable_type]
+    elif observable_type in VDM_OBSERVABLE_TYPE_PRE_FEC_BER_RANGE:
+        type_name = "Pre-FEC BER/FERC statistic (Basic or Statistic, F16) -- exact ID meaning not catalogued"
+    elif 0x64 <= observable_type <= 0x7F:
+        type_name = "Custom Observable (100-127)"
+    elif 0x80 <= observable_type <= 0xFF:
+        type_name = "Restricted (OIF use), 128-255"
+    elif observable_type == 0:
+        type_name = VDM_OBSERVABLE_TYPE_NAMES[0]
+    else:
+        type_name = "reserved/unknown"
+
+    return {
+        "local_threshold_set_id": local_threshold_set_id,
+        "monitored_resource": (
+            "module-wide" if monitored_resource == VDM_MONITORED_RESOURCE_MODULE_WIDE
+            else f"lane/DataPath {monitored_resource + 1}"
+        ),
+        "observable_type": observable_type,
+        "observable_type_name": type_name,
+        "is_used": observable_type != 0x00,
+    }
+
+
+def parse_vdm_descriptor_page(data, page):
+    """Decode a full VDM descriptor page (Pages 20h-23h) into a list of up
+    to 64 per-instance descriptors (see parse_vdm_descriptor()). `data`
+    must be exactly 128 bytes starting at 0x80. `page` (one of
+    PAGE_VDM_DESCRIPTORS) determines the Global ThresholdSetID offset
+    attached to each entry."""
+    if len(data) < 128:
+        raise ValueError(f"expected 128 bytes of a VDM descriptor page, got {len(data)}")
+    offset = VDM_THRESHOLD_SET_GROUP_OFFSET.get(page)
+    descriptors = []
+    for i in range(64):
+        even, odd = data[i * 2], data[i * 2 + 1]
+        d = parse_vdm_descriptor(even, odd)
+        if offset is not None:
+            d["global_threshold_set_id"] = offset + d["local_threshold_set_id"]
+        descriptors.append(d)
+    return descriptors
+
+
+def parse_vdm_sample_page(data):
+    """Decode a full VDM sample page (Pages 24h-27h) into a list of 64 raw
+    unsigned 16-bit values (X16, big-endian, Table 8-123). Interpreting a
+    given slot's sign/scale requires its paired descriptor's
+    observable_type -- not done here, since most type IDs aren't
+    catalogued yet (see VDM_OBSERVABLE_TYPE_NAMES)."""
+    if len(data) < 128:
+        raise ValueError(f"expected 128 bytes of a VDM sample page, got {len(data)}")
+    return [(data[i * 2] << 8) | data[i * 2 + 1] for i in range(64)]
+
+
+def parse_vdm_threshold_page(data):
+    """Decode a full VDM threshold page (Pages 28h-2Bh) into a list of 16
+    raw threshold quads (Table 8-124: HighAlarm/LowAlarm/HighWarning/
+    LowWarning, same field order as Page 02h), indexed by LocalThresholdSetID
+    0-15. Values are raw U16 -- scaling depends on the referencing
+    descriptor's observable_type, same caveat as parse_vdm_sample_page()."""
+    if len(data) < 128:
+        raise ValueError(f"expected 128 bytes of a VDM threshold page, got {len(data)}")
+    return [_parse_threshold_quad(data, UPPER_MEMORY_BASE + i * 8, signed=False) for i in range(16)]
+
+
+# Page 2Fh: VDM Advertisement + dynamic controls (Table 8-128).
+PAGE2F_VDM_SUPPORT_BYTE = 0x80         # bits 1-0: raw value + 1 = number of active groups (1-4)
+PAGE2F_FINE_INTERVAL_LENGTH = (0x81, 2)  # bytes 129-130, U16, units of 0.1ms
+PAGE2F_FREEZE_REQUEST_BYTE = 0x90      # byte 144, bit 7 (RW)
+PAGE2F_FREEZE_DONE_UNFREEZE_DONE_BYTE = 0x91  # byte 145: bit 7 = FreezeDone (RO), bit 6 = UnfreezeDone (RO)
+
+
+def parse_vdm_control(data):
+    """Decode Page 2Fh's VDM group-count advertisement and the
+    freeze/unfreeze handshake status. `data` must be exactly 128 bytes
+    starting at 0x80."""
+    if len(data) < 128:
+        raise ValueError(f"expected 128 bytes of Page 2Fh, got {len(data)}")
+
+    support_byte = data[PAGE2F_VDM_SUPPORT_BYTE - UPPER_MEMORY_BASE]
+    fine_interval_off, _ = PAGE2F_FINE_INTERVAL_LENGTH
+    fine_interval_idx = fine_interval_off - UPPER_MEMORY_BASE
+    fine_interval = (data[fine_interval_idx] << 8) | data[fine_interval_idx + 1]
+    freeze_request_byte = data[PAGE2F_FREEZE_REQUEST_BYTE - UPPER_MEMORY_BASE]
+    freeze_status_byte = data[PAGE2F_FREEZE_DONE_UNFREEZE_DONE_BYTE - UPPER_MEMORY_BASE]
+
+    return {
+        "active_vdm_groups": (support_byte & 0x3) + 1,
+        "fine_interval_length_ms": fine_interval * 0.1,
+        "freeze_request": bool((freeze_request_byte >> 7) & 0x1),
+        "freeze_done": bool((freeze_status_byte >> 7) & 0x1),
+        "unfreeze_done": bool((freeze_status_byte >> 6) & 0x1),
+    }
+
+
+def build_freeze_request_byte(assert_freeze):
+    """Build Page 2Fh byte 144 (FreezeRequest, bit 7) -- write True to
+    request the module freeze all VDM statistics registers for a
+    consistent multi-instance snapshot, False to release."""
+    return 0x80 if assert_freeze else 0x00
+
+
+# --- Page 15h: Timing Characteristics (Section 8.13, p.201) --------------
+# Optional, advertised via Page 01h's timing_page15h_supported bit (byte
+# 145 bit 3). All RO. Per-host-lane (8 lanes) module transit latency.
+# Spec explicitly notes accuracy/update-timing semantics are UNDEFINED in
+# this revision -- treat these as informational, not tight-tolerance
+# assertable values.
+PAGE15_RX_LATENCY_BASE = 0xE0   # bytes 224-239: 8 x U16 ns, DataPathRxLatencyHostLane<i>
+PAGE15_TX_LATENCY_BASE = 0xF0   # bytes 240-255: 8 x U16 ns, DataPathTxLatencyHostLane<i>
+
+
+def parse_page15_timing(data):
+    """Decode Page 15h's per-lane Rx/Tx transit latency (nanoseconds).
+    `data` must be exactly 128 bytes starting at address 0x80. Returns
+    1-indexed lane numbers, matching the spec's own HostLane<i> naming."""
+    if len(data) < 128:
+        raise ValueError(f"expected 128 bytes of Page 15h, got {len(data)}")
+
+    def _lane_values(base):
+        idx = base - UPPER_MEMORY_BASE
+        return {
+            lane: (data[idx + (lane - 1) * 2] << 8) | data[idx + (lane - 1) * 2 + 1]
+            for lane in range(1, 9)
+        }
+
+    return {
+        "rx_latency_ns": _lane_values(PAGE15_RX_LATENCY_BASE),
+        "tx_latency_ns": _lane_values(PAGE15_TX_LATENCY_BASE),
+    }
+
+
+# --- Page 03h: User EEPROM (Section 8.6, p.140) ---------------------------
+# Optional, advertised via Page 01h's page03_user_eeprom_supported bit
+# (byte 142 bit 2). The whole page (128-255) is host-writable, vendor-
+# unspecified-use non-volatile memory -- no fixed field layout to decode,
+# unlike every other page in this file. Max PAGE_USER_EEPROM_MAX_WRITE_BYTES
+# (8) bytes per write; tWRITENV (80ms) hold-off applies after writing.
+PAGE03_USER_EEPROM_BASE = 0x80
+PAGE03_USER_EEPROM_SIZE = 0x80
+
+
 # --- CDB: Command Data Block framing (Section 8.15, Tables 8-129/8-130/8-131, p.212) --
 # CDB is the firmware-update / vendor-extension command mechanism. A host
 # writes a command header (+ optional Local/Extended Payload) to Page 9Fh
@@ -500,6 +807,17 @@ CDB_CMD_START_FIRMWARE_DOWNLOAD = 0x0101
 CDB_CMD_ABORT_FIRMWARE_DOWNLOAD = 0x0102
 CDB_CMD_WRITE_FIRMWARE_BLOCK_LPL = 0x0103
 CDB_CMD_WRITE_FIRMWARE_BLOCK_EPL = 0x0104
+CDB_CMD_COMPLETE_FIRMWARE_DOWNLOAD = 0x0107
+CDB_CMD_COPY_FIRMWARE_IMAGE = 0x0108
+CDB_CMD_RUN_FIRMWARE_IMAGE = 0x0109
+
+CDB_COPY_DIRECTION_A_TO_B = 0xAB
+CDB_COPY_DIRECTION_B_TO_A = 0xBA
+
+CDB_RUN_IMAGE_TRAFFIC_AFFECTING_TO_INACTIVE = 0x00
+CDB_RUN_IMAGE_HITLESS_TO_INACTIVE = 0x01
+CDB_RUN_IMAGE_TRAFFIC_AFFECTING_TO_RUNNING = 0x02
+CDB_RUN_IMAGE_HITLESS_TO_RUNNING = 0x03
 
 
 def build_cdb_command(cmd_id, lpl_payload=b""):
@@ -533,6 +851,61 @@ def build_cdb_command(cmd_id, lpl_payload=b""):
     return header_prefix + bytes([checksum]) + lpl_payload
 
 
+def build_cdb_query_status(response_delay_ms=0):
+    """Build the 0000h Query Status command (Table 9-3): LPL = 2-byte
+    ResponseDelay (module should respond ASAP if 0)."""
+    lpl = bytes([(response_delay_ms >> 8) & 0xFF, response_delay_ms & 0xFF])
+    return build_cdb_command(CDB_CMD_QUERY_STATUS, lpl)
+
+
+def build_cdb_start_firmware_download(image_size, vendor_data=b""):
+    """Build the 0101h Start Firmware Download command (Table 9-16). LPL =
+    ImageSize (U32, bytes 136-139) + 4 reserved bytes (140-143) + up to
+    112 bytes of vendor header data (144-255)."""
+    if len(vendor_data) > 112:
+        raise ValueError(f"vendor_data is {len(vendor_data)} bytes, max 112")
+    lpl = bytes([
+        (image_size >> 24) & 0xFF, (image_size >> 16) & 0xFF,
+        (image_size >> 8) & 0xFF, image_size & 0xFF,
+        0x00, 0x00, 0x00, 0x00,
+    ]) + vendor_data
+    return build_cdb_command(CDB_CMD_START_FIRMWARE_DOWNLOAD, lpl)
+
+
+def build_cdb_write_firmware_block_lpl(block_address, firmware_block):
+    """Build the 0103h Write Firmware Block LPL command (Table 9-18). LPL
+    = BlockAddress (U32, bytes 136-139) + up to 116 bytes of firmware
+    image data (140-255)."""
+    if len(firmware_block) > 116:
+        raise ValueError(
+            f"firmware_block is {len(firmware_block)} bytes, max 116 for LPL -- "
+            f"use Write Firmware Block EPL (0104h, not implemented here) for larger blocks"
+        )
+    lpl = bytes([
+        (block_address >> 24) & 0xFF, (block_address >> 16) & 0xFF,
+        (block_address >> 8) & 0xFF, block_address & 0xFF,
+    ]) + firmware_block
+    return build_cdb_command(CDB_CMD_WRITE_FIRMWARE_BLOCK_LPL, lpl)
+
+
+def build_cdb_copy_firmware_image(direction):
+    """Build the 0108h Copy Firmware Image command (Table 9-23). LPL =
+    1 byte CopyDirection (CDB_COPY_DIRECTION_A_TO_B/B_TO_A)."""
+    return build_cdb_command(CDB_CMD_COPY_FIRMWARE_IMAGE, bytes([direction]))
+
+
+def build_cdb_run_firmware_image(image_to_run, delay_to_reset_ms=0):
+    """Build the 0109h Run Firmware Image command (Table 9-24). LPL = 1
+    reserved byte + ImageToRun (byte 137) + DelayToReset (U16, bytes
+    138-139). Note: if delay_to_reset_ms is 0, the spec warns the module
+    may reset before the host even reads back CdbStatus for this command."""
+    lpl = bytes([
+        0x00, image_to_run & 0xFF,
+        (delay_to_reset_ms >> 8) & 0xFF, delay_to_reset_ms & 0xFF,
+    ])
+    return build_cdb_command(CDB_CMD_RUN_FIRMWARE_IMAGE, lpl)
+
+
 def compute_cdb_checksum(header_prefix_and_lpl):
     """Negation (two's complement) of the sum of the given bytes, mod 256
     -- see build_cdb_command()'s docstring for why this, not a plain
@@ -541,6 +914,66 @@ def compute_cdb_checksum(header_prefix_and_lpl):
     LPL payload (everything build_cdb_command() writes except the
     checksum byte itself)."""
     return (0x100 - (sum(header_prefix_and_lpl) & 0xFF)) & 0xFF
+
+
+def parse_cdb_query_status_reply(lpl_payload):
+    """Decode the 0000h Query Status reply LPL body (Table 9-3): byte 0
+    (absolute offset 136) = Length (should be 2), byte 1 (137) = Status,
+    reporting the module's current unlock level -- NOT the same thing as
+    CdbStatus (Lower Memory 0x25/0x26, which reports whether the QUERY
+    STATUS *command itself* succeeded/is still running; this is the
+    payload it returns once it has).
+    """
+    if len(lpl_payload) < 2:
+        raise ValueError(f"expected at least 2 bytes of Query Status reply LPL, got {len(lpl_payload)}")
+    length, status = lpl_payload[0], lpl_payload[1]
+    if status == 0x00:
+        unlock_level = "module_boot_up"
+    elif status == 0x01:
+        unlock_level = "host_password_accepted"
+    elif status & 0x80:
+        unlock_level = "module_password_accepted"
+    else:
+        unlock_level = "reserved/undefined"
+    return {"length": length, "status_byte": status, "unlock_level": unlock_level}
+
+
+# --- CDB 0100h Get Firmware Info reply (Table 9-15) -----------------------
+def parse_cdb_get_firmware_info(lpl_payload):
+    """Decode the 0100h Get Firmware Info reply LPL body. `lpl_payload`
+    should start at absolute byte 136 (i.e. index 0 == byte 136).
+    ImageInformation's bit-to-offset mapping has one unresolved wrinkle:
+    the spec's prose says Factory/Boot info starts at byte 201, but its
+    own field table lists FactoryBootMajor starting at byte 210 --
+    implemented using the field-table offset (210), flagged here in case
+    a real module's reply disagrees.
+    """
+    if len(lpl_payload) < 2:
+        raise ValueError(f"expected at least 2 bytes of Get Firmware Info reply LPL, got {len(lpl_payload)}")
+
+    def _u8(byte_offset):
+        idx = byte_offset - 136
+        return lpl_payload[idx] if idx < len(lpl_payload) else None
+
+    firmware_status = lpl_payload[0]
+    image_information = lpl_payload[1]
+    result = {
+        "bank_a_operational": bool(firmware_status & 0x1),
+        "bank_a_administrative": bool((firmware_status >> 1) & 0x1),
+        "bank_a_invalid": bool((firmware_status >> 2) & 0x1),
+        "bank_b_operational": bool((firmware_status >> 4) & 0x1),
+        "bank_b_administrative": bool((firmware_status >> 5) & 0x1),
+        "bank_b_invalid": bool((firmware_status >> 6) & 0x1),
+    }
+
+    if image_information & 0x1:
+        result["image_a"] = (_u8(138), _u8(139))  # (major, minor); build/extra-string not decoded
+    if image_information & 0x2:
+        result["image_b"] = (_u8(174), _u8(175))
+    if image_information & 0x4:
+        result["factory_boot"] = (_u8(210), _u8(211))
+
+    return result
 
 
 def parse_cdb_reply_header(data):

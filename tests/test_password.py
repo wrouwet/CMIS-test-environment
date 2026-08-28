@@ -1,10 +1,12 @@
 """Password mechanism (Section 8.2.12, Lower Memory bytes 118-125):
 gates a small number of protected features (mainly password-change
 itself, and some vendor-defined protected areas). Two independent
-mechanisms exist for the same underlying password state -- this project
-only exercises the direct register-write mechanism (the simpler of the
-two); CDB_CMD_ENTER_PASSWORD/CDB_CMD_CHANGE_PASSWORD (Section 9.3.2/9.3.3)
-are the CDB-based equivalent, not exercised here yet.
+mechanisms exist for the same underlying password state: the direct
+register-write mechanism, and CDB_CMD_ENTER_PASSWORD (Section 9.3.2) --
+this project exercises both, since a given module may implement only
+one, and the CDB path is the only one of the two that gives direct
+success/failure feedback (via Query Status's Table 9-3 unlock_level
+field, see cmis.parse_cdb_query_status_reply()).
 
 Deliberately does NOT attempt to CHANGE the password (that's a real,
 persistent, hard-to-reverse write to a live module) -- only unlocks with
@@ -14,6 +16,8 @@ reversible test action (a wrong password or module reinit re-locks it).
 NOT yet run against real hardware -- see the project README's "Current
 status" section.
 """
+
+import pytest
 
 import cmis
 import cmis_helpers
@@ -42,3 +46,39 @@ def test_unlock_with_default_host_password(bridge):
     """
     cmis_helpers.unlock_password(bridge, cmis.DEFAULT_HOST_PASSWORD)
     print("[cmis-discover] wrote factory-default Host Password to PasswordEntryArea (0x7A-0x7D)")
+
+
+def test_enter_password_via_cdb(bridge, module_info):
+    """The CDB equivalent of the above -- CDB_CMD_ENTER_PASSWORD (0001h)
+    with the factory-default Host Password -- but unlike the register
+    mechanism, this one gives direct feedback: follow it with Query
+    Status (0000h) and check the reply's unlock_level field (Table 9-3)
+    actually reports 'host_password_accepted'. Skipped if the module
+    doesn't advertise CDB support at all."""
+    if module_info["memory_model"] == cmis.MEMORY_MODEL_FLAT:
+        pytest.skip("module reports Flat Memory model -- CDB (Page 9Fh) isn't supported (Table 8-4)")
+
+    cmis_helpers.select_page(bridge, bank=0x00, page=cmis.PAGE_ADVERTISING)
+    advertising = cmis.parse_page01_advertising(cmis_helpers.read_upper_memory(bridge))
+    if advertising["cdb_instances_supported"] == 0:
+        pytest.skip("module does not advertise CDB support (Page 01h CdbInstancesSupported=0)")
+
+    password_bytes = cmis.build_password_write(cmis.DEFAULT_HOST_PASSWORD)
+    cmis_helpers.send_cdb_command(bridge, cmis.CDB_CMD_ENTER_PASSWORD, lpl_payload=password_bytes)
+    status = cmis_helpers.poll_cdb_status(bridge)
+    print(f"[cmis-discover] CDB Enter Password outcome: {status}")
+
+    if status["state"] != "success":
+        print(f"[cmis-discover] Enter Password did not succeed ({status['meaning']}) -- "
+              f"module may not implement this mechanism, or rejected the default password")
+        return
+
+    cmis_helpers.send_cdb_full_command(bridge, cmis.build_cdb_query_status())
+    cmis_helpers.poll_cdb_status(bridge)
+    reply = cmis_helpers.read_cdb_reply(bridge)
+    decoded = cmis.parse_cdb_query_status_reply(reply["lpl_payload"])
+    print(f"[cmis-discover] post-unlock Query Status reply: {decoded}")
+    assert decoded["unlock_level"] == "host_password_accepted", (
+        f"sent Enter Password successfully but Query Status still reports "
+        f"'{decoded['unlock_level']}' -- unexpected"
+    )

@@ -52,3 +52,19 @@ def test_read_environmental_monitors(module_info):
         f"VCC {vcc_v:.3f} V is outside any plausible supply range -- "
         f"likely a decoding bug, not a real reading"
     )
+
+
+def test_read_module_flags_and_cdb_status(module_info):
+    """Print the remaining Lower Memory flags this project decodes but
+    doesn't have a dedicated test for: MciMaxSpeed/SteppedConfigOnly
+    (byte 2), InterruptDeasserted (byte 3), and both CDB instances'
+    complete-flag + status (bytes 8/37/38, Table 8-13) -- visibility
+    only, since none of these have a single "correct" value independent
+    of the specific module and what it's currently doing."""
+    print(f"stepped_config_only: {module_info['stepped_config_only']}")
+    print(f"mci_max_speed: {module_info['mci_max_speed']:02b}b")
+    print(f"interrupt_deasserted: {module_info['interrupt_deasserted']}")
+    print(f"cdb_cmd_complete_1: {module_info['cdb_cmd_complete_1']}, "
+          f"cdb_status_1: {module_info['cdb_status_1']}")
+    print(f"cdb_cmd_complete_2: {module_info['cdb_cmd_complete_2']}, "
+          f"cdb_status_2: {module_info['cdb_status_2']}")

@@ -23,7 +23,12 @@ def test_page01_advertising_and_checksum(bridge, module_info):
     as Page 00h's checksum, see cmis.PAGE01_CHECKSUM_COVERAGE)."""
     _require_paged(module_info)
 
-    cmis_helpers.select_page(bridge, bank=0x00, page=cmis.PAGE_ADVERTISING)
+    took = cmis_helpers.try_select_page(bridge, bank=0x00, page=cmis.PAGE_ADVERTISING)
+    assert took, (
+        "Page 01h is mandatory for any Paged-memory module (Table 8-4) but did not "
+        "read back as selected -- either a spec-compliance gap in this module, or a "
+        "problem with this project's page-select plumbing"
+    )
     data = cmis_helpers.read_upper_memory(bridge)
 
     decoded = cmis.parse_page01_advertising(data)

@@ -26,7 +26,7 @@ without hardware:
   a real but limited form of confidence: it proves the code does what
   the spec text says, not that the spec text was transcribed correctly,
   and definitely not that a real module actually behaves this way.
-- All 15 tests in `tests/` collect cleanly under pytest (no import/syntax
+- All 27 tests in `tests/` collect cleanly under pytest (no import/syntax
   errors), but have never executed against a real `bridge` fixture.
 
 **Treat every byte offset and field meaning as "correctly transcribed

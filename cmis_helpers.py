@@ -99,10 +99,35 @@ def send_cdb_command(bridge, cmd_id, lpl_payload=b""):
     ResponseDelay (returned by that query) tells you how long to wait
     before polling. LPL-only (<=120 byte payload) commands only -- EPL
     (pages A0h-AFh) isn't wired up here yet."""
+    send_cdb_full_command(bridge, cmis.build_cdb_command(cmd_id, lpl_payload))
+
+
+def send_cdb_full_command(bridge, command_bytes):
+    """Write an already-framed CDB command (e.g. from
+    cmis.build_cdb_query_status()/build_cdb_start_firmware_download()/etc.)
+    to Page 9Fh. Lower-level than send_cdb_command() -- use this when the
+    command needs a builder more specific than a bare cmd_id+lpl_payload."""
     select_page(bridge, bank=0x00, page=cmis.PAGE_CDB_MESSAGE)
-    command = cmis.build_cdb_command(cmd_id, lpl_payload)
-    bridge.write(cmis.CMIS_I2C_ADDR, [cmis.UPPER_MEMORY_BASE] + list(command))
+    bridge.write(cmis.CMIS_I2C_ADDR, [cmis.UPPER_MEMORY_BASE] + list(command_bytes))
     time.sleep(cmis.T_WRITE_MS / 1000.0)
+
+
+def poll_cdb_status(bridge, instance=1, timeout_s=2.0, interval_s=0.1):
+    """Poll Lower Memory's CdbStatus field (Section 8.2.8) until it
+    reports something other than 'in_progress', or `timeout_s` elapses.
+    Returns the final decoded status dict (see cmis.decode_cdb_status()).
+    This is the spec-recommended way to wait for a CDB command to finish
+    -- NOT read_cdb_reply()'s Page 9Fh reply header, which only describes
+    the LPL/EPL *body* framing, not whether the module is still busy."""
+    deadline = time.monotonic() + timeout_s
+    status = None
+    while time.monotonic() < deadline:
+        lower = cmis.parse_lower_memory(read_lower_memory(bridge))
+        status = lower["cdb_status_1"] if instance == 1 else lower["cdb_status_2"]
+        if status["state"] != "in_progress":
+            return status
+        time.sleep(interval_s)
+    return status
 
 
 def read_cdb_reply(bridge):
@@ -116,6 +141,103 @@ def read_cdb_reply(bridge):
     else:
         reply["lpl_payload"] = b""
     return reply
+
+
+def try_select_page(bridge, bank, page, settle=True):
+    """Attempt to select a bank/page and confirm, by reading back Lower
+    Memory's PageSelect field, whether it actually took -- the robust way
+    to gate a test on "does this optional page even exist" that doesn't
+    depend on correctly decoding any particular advertisement bit (some
+    of which, e.g. Page 01h's per-page "Supported Pages" bitmap, this
+    project hasn't independently confirmed bit-for-bit yet -- see
+    cmis.py). Uses the spec's own confirmed gotcha (Section 8.2.13):
+    selecting an unsupported page silently resets PageSelect back to
+    0x00 rather than erroring.
+
+    Returns True if `page` reads back as selected, False otherwise (in
+    which case the module has already fallen back to Page 00h -- no
+    cleanup needed by the caller).
+    """
+    select_page(bridge, bank, page, settle=settle)
+    lower = cmis.parse_lower_memory(read_lower_memory(bridge))
+    return lower["page_select"] == (page & 0xFF) and lower["bank_select"] == (bank & 0xFF)
+
+
+def read_vdm_control(bridge):
+    """Select Page 2Fh and decode VDM's group-count advertisement and
+    freeze/unfreeze handshake status (see cmis.parse_vdm_control())."""
+    data = read_page(bridge, bank=0x00, page=cmis.PAGE_VDM_CONTROL)
+    return cmis.parse_vdm_control(data)
+
+
+def read_vdm_group(bridge, group_index):
+    """Read one VDM group's (0-3, i.e. groups 1-4) descriptor + sample +
+    threshold pages and return them decoded together, since a
+    descriptor's fields are what make its paired sample/threshold data
+    meaningful. Does not itself check active_vdm_groups (see
+    read_vdm_control()) -- callers should skip groups beyond what's
+    advertised rather than assume all 4 pages exist."""
+    descriptor_page = cmis.PAGE_VDM_DESCRIPTORS[group_index]
+    sample_page = cmis.PAGE_VDM_SAMPLES[group_index]
+    threshold_page = cmis.PAGE_VDM_THRESHOLDS[group_index]
+
+    descriptors = cmis.parse_vdm_descriptor_page(
+        read_page(bridge, bank=0x00, page=descriptor_page), descriptor_page)
+    samples = cmis.parse_vdm_sample_page(read_page(bridge, bank=0x00, page=sample_page))
+    thresholds = cmis.parse_vdm_threshold_page(read_page(bridge, bank=0x00, page=threshold_page))
+
+    return {"descriptors": descriptors, "samples": samples, "thresholds": thresholds}
+
+
+def vdm_freeze(bridge, timeout_s=2.0, interval_s=0.05):
+    """Assert Page 2Fh's FreezeRequest bit and poll FreezeDone until the
+    module confirms (or `timeout_s` elapses) -- the handshake needed to
+    read multiple VDM statistics instances as a gap-free, consistent
+    snapshot (Section 8.14). Returns True if FreezeDone was observed."""
+    select_page(bridge, bank=0x00, page=cmis.PAGE_VDM_CONTROL)
+    bridge.write(cmis.CMIS_I2C_ADDR,
+                 [cmis.PAGE2F_FREEZE_REQUEST_BYTE, cmis.build_freeze_request_byte(True)])
+    time.sleep(cmis.T_WRITE_MS / 1000.0)
+
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if read_vdm_control(bridge)["freeze_done"]:
+            return True
+        time.sleep(interval_s)
+    return False
+
+
+def vdm_unfreeze(bridge, timeout_s=2.0, interval_s=0.05):
+    """Clear Page 2Fh's FreezeRequest bit and poll UnfreezeDone until the
+    module confirms (or `timeout_s` elapses). Returns True if
+    UnfreezeDone was observed."""
+    select_page(bridge, bank=0x00, page=cmis.PAGE_VDM_CONTROL)
+    bridge.write(cmis.CMIS_I2C_ADDR,
+                 [cmis.PAGE2F_FREEZE_REQUEST_BYTE, cmis.build_freeze_request_byte(False)])
+    time.sleep(cmis.T_WRITE_MS / 1000.0)
+
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if read_vdm_control(bridge)["unfreeze_done"]:
+            return True
+        time.sleep(interval_s)
+    return False
+
+
+def read_page15_timing(bridge):
+    """Select Page 15h and decode per-lane Rx/Tx transit latency."""
+    return cmis.parse_page15_timing(read_page(bridge, bank=0x00, page=cmis.PAGE_TIMING_CHARACTERISTICS))
+
+
+def write_user_eeprom(bridge, offset, data):
+    """Write `data` to Page 03h (User EEPROM) starting at absolute address
+    `offset` (0x80-0xFF), chunked to the spec's max 8 bytes/write
+    (Section 8.6), waiting out tWRITENV after each chunk since this is
+    non-volatile memory. Caller must already have selected Page 03h."""
+    for chunk_start in range(0, len(data), cmis.PAGE_USER_EEPROM_MAX_WRITE_BYTES):
+        chunk = data[chunk_start:chunk_start + cmis.PAGE_USER_EEPROM_MAX_WRITE_BYTES]
+        bridge.write(cmis.CMIS_I2C_ADDR, [offset + chunk_start] + list(chunk))
+        time.sleep(cmis.T_WRITE_NV_MS / 1000.0)
 
 
 def select_page(bridge, bank, page, settle=True):
