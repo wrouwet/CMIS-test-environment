@@ -284,6 +284,17 @@ def read_page13_loopback_controls(bridge):
     return cmis.parse_page13_loopback_controls(read_page(bridge, bank=0x00, page=cmis.PAGE_DIAG_CONTROL))
 
 
+def write_page13_loopback_control(bridge, byte_offset, value):
+    """Write one of Page 13h's 4 loopback-enable bytes (180-183) directly
+    -- TRAFFIC-AFFECTING, intentionally not wrapped in any extra safety
+    beyond selecting the right page first. Callers are expected to have
+    already gated on an explicit opt-in (see test_page13_loopback.py's
+    CMIS_ALLOW_DISRUPTIVE_TESTS-gated test) before calling this."""
+    select_page(bridge, bank=0x00, page=cmis.PAGE_DIAG_CONTROL)
+    bridge.write(cmis.CMIS_I2C_ADDR, [byte_offset, value])
+    time.sleep(cmis.T_WRITE_MS / 1000.0)
+
+
 def read_page14_status(bridge, selector=None):
     """Select Page 14h; if `selector` is given, write it to
     DiagnosticsSelector first (a safe, non-traffic-affecting mux change,
