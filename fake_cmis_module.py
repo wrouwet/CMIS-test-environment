@@ -347,6 +347,13 @@ class FakeCmisModule:
                 base = lane * 16
                 window[base:base + 8] = (1000 * (lane + 1)).to_bytes(8, "little")
                 window[base + 8:base + 16] = (10_000_000 + lane).to_bytes(8, "little")
+        elif selector == cmis.DIAG_SELECTOR_BER_REALTIME:
+            raw_f16 = (5 << 11) | 100  # arbitrary small BER-like value
+            for lane in range(8):
+                window[lane * 2] = raw_f16 & 0xFF
+                window[lane * 2 + 1] = (raw_f16 >> 8) & 0xFF
+                window[16 + lane * 2] = raw_f16 & 0xFF
+                window[16 + lane * 2 + 1] = (raw_f16 >> 8) & 0xFF
         page14[window_idx:window_idx + 64] = window
 
     def _handle_vdm_freeze(self, freeze_byte):

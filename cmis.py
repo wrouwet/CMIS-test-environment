@@ -110,7 +110,11 @@ MODULE_STATE_BYTE = 0x03
 MODULE_STATE_RESERVED_0 = 0b000
 MODULE_STATE_LOW_PWR = 0b001
 MODULE_STATE_PWR_UP = 0b010
-MODULE_STATE_READY = 0b011  # the only state a Flat Memory module ever reports
+MODULE_STATE_READY = 0b011
+# Confirmed (Section 6.3.2.3 + Table 8-4): "Flat memory modules shall
+# statically report a module state of ModuleReady" -- transitions happen
+# without host interaction and are "just a specification formalism,"
+# since a Flat Memory module's contents don't actually depend on state.
 MODULE_STATE_PWR_DN = 0b100
 MODULE_STATE_FAULT = 0b101
 MODULE_STATE_NAMES = {
@@ -671,23 +675,64 @@ VDM_MONITORED_RESOURCE_MODULE_WIDE = 0xF  # 0-7 = Lane/DataPath 1-8; 15 = module
 # across groups, since each group's Page 28h-2Bh only holds 16 local sets.
 VDM_THRESHOLD_SET_GROUP_OFFSET = {0x20: 1, 0x21: 17, 0x22: 33, 0x23: 49}
 
-# ObservableType values confirmed by name in the fetched text (Table
-# 8-122) -- NOT a complete table (the full ID 3-99 range wasn't extracted).
-# Data Type (U16/S16/F16) is a property of the Observable Type itself, per
-# the spec -- NOT a separate descriptor field -- so full numeric decoding
-# of a sample requires knowing every ID's data type, which this project
-# doesn't have yet for most IDs. parse_vdm_sample() below returns the raw
-# 16-bit value plus this name (or "unknown (not yet catalogued)") rather
-# than guessing a data type for an uncatalogued ID.
-VDM_OBSERVABLE_TYPE_NAMES = {
-    0x00: "NotUsed (instance is passive/unused)",
-    0x01: "LaserAge (Basic, U16)",
-    0x02: "TECCurrent (Basic, S16)",
-    # IDs 9-24: Pre-FEC BER / FERC (min/max/avg/current), Basic or
-    # Statistic, Data Type F16 -- exact per-ID assignment within 9-24 not
-    # extracted from the fetched text; reported generically if seen.
+# ObservableType -> (name, pm_type, data_type, scale, unit) -- confirmed
+# via a dedicated research pass across the full CMIS 4.0-5.4 spec text
+# (Table 8-122 in 5.0, renumbered in later revisions but confirmed
+# content-identical for IDs 0-24; IDs 25+ are additive across revisions,
+# never removed/renumbered). `scale` is a physical-units multiplier
+# applied to the raw integer for U16/S16 types; F16 types need no
+# separate scale (decode_f16() already returns the real value) so their
+# scale is left as None. Data Type is what determines how a paired
+# sample (parse_vdm_sample_page()'s raw values) should be interpreted --
+# see interpret_vdm_sample().
+VDM_OBSERVABLE_TYPES = {
+    0x00: ("NotUsed", None, None, None, None),
+    0x01: ("Laser Age", "Basic", "U16", 1, "%"),
+    0x02: ("TEC Current (Module)", "Basic", "S16", 100 / 32767, "%"),
+    0x03: ("Laser Frequency Error (Media Lane)", "Basic", "S16", 10, "MHz"),
+    0x04: ("Laser Temperature (Media Lane)", "Basic", "S16", 1 / 256, "degC"),
+    0x05: ("SNR, Media Input (Media Lane)", "Basic", "U16", 1 / 256, "dB"),
+    0x06: ("SNR, Host Input (Lane)", "Basic", "U16", 1 / 256, "dB"),
+    0x07: ("PAM4 Level Transition Parameter, Media Input", "Basic", "U16", 1 / 256, "dB"),
+    0x08: ("PAM4 Level Transition Parameter, Host Input", "Basic", "U16", 1 / 256, "dB"),
+    0x09: ("Pre-FEC BER Minimum, Media Input", "Statistic", "F16", None, None),
+    0x0A: ("Pre-FEC BER Minimum, Host Input", "Statistic", "F16", None, None),
+    0x0B: ("Pre-FEC BER Maximum, Media Input", "Statistic", "F16", None, None),
+    0x0C: ("Pre-FEC BER Maximum, Host Input", "Statistic", "F16", None, None),
+    0x0D: ("Pre-FEC BER Average, Media Input", "Statistic", "F16", None, None),
+    0x0E: ("Pre-FEC BER Average, Host Input", "Statistic", "F16", None, None),
+    0x0F: ("Pre-FEC BER Current Value, Media Input", "Basic", "F16", None, None),
+    0x10: ("Pre-FEC BER Current Value, Host Input", "Basic", "F16", None, None),
+    0x11: ("FERC Minimum, Media Input", "Statistic", "F16", None, None),
+    0x12: ("FERC Minimum, Host Input", "Statistic", "F16", None, None),
+    0x13: ("FERC Maximum, Media Input", "Statistic", "F16", None, None),
+    0x14: ("FERC Maximum, Host Input", "Statistic", "F16", None, None),
+    0x15: ("FERC Average, Media Input", "Statistic", "F16", None, None),
+    0x16: ("FERC Average, Host Input", "Statistic", "F16", None, None),
+    0x17: ("FERC Current Value, Media Input", "Basic", "F16", None, None),
+    0x18: ("FERC Current Value, Host Input", "Basic", "F16", None, None),
+    # 25-26: CMIS 5.2+
+    0x19: ("FERC Total Accumulated, Media Input", "Statistic", "F16", None, None),
+    0x1A: ("FERC Total Accumulated, Host Input", "Statistic", "F16", None, None),
+    # 27-34: CMIS 5.3+
+    0x1B: ("SEWmax Minimum, Media Input", "Statistic", "U16", 1, None),
+    0x1C: ("SEWmax Minimum, Host Input", "Statistic", "U16", 1, None),
+    0x1D: ("SEWmax Maximum, Media Input", "Statistic", "U16", 1, None),
+    0x1E: ("SEWmax Maximum, Host Input", "Statistic", "U16", 1, None),
+    0x1F: ("SEWmax Average, Media Input", "Statistic", "U16", 1, None),
+    0x20: ("SEWmax Average, Host Input", "Statistic", "U16", 1, None),
+    0x21: ("SEWmax Current Sample, Media Input", "Basic", "U16", 1, None),
+    0x22: ("SEWmax Current Sample, Host Input", "Basic", "U16", 1, None),
+    # 77-84: CMIS 5.3+
+    0x4D: ("Vcc2p6 Voltage Monitor (Module)", "Basic", "U16", 100e-6, "V"),
+    0x4E: ("Vcc1p8 Voltage Monitor (Module)", "Basic", "U16", 100e-6, "V"),
+    0x4F: ("Vcc1p2 Voltage Monitor (Module)", "Basic", "U16", 100e-6, "V"),
+    0x50: ("Vcc0p9 Voltage Monitor (Module)", "Basic", "U16", 100e-6, "V"),
+    0x51: ("Vcc0p7A Voltage Monitor (Module)", "Basic", "U16", 100e-6, "V"),
+    0x52: ("Vcc0p7B Voltage Monitor (Module)", "Basic", "U16", 100e-6, "V"),
+    0x53: ("Vcc12 Voltage Monitor (Module)", "Basic", "U16", 250e-6, "V"),
+    0x54: ("ELS Input Power (Media Lane)", "Basic", "S16", 0.01, "dBm"),
 }
-VDM_OBSERVABLE_TYPE_PRE_FEC_BER_RANGE = range(0x09, 0x19)  # 9-24 inclusive
 
 
 def parse_vdm_descriptor(even_byte, odd_byte):
@@ -696,16 +741,12 @@ def parse_vdm_descriptor(even_byte, odd_byte):
     monitored_resource = even_byte & 0xF
     observable_type = odd_byte
 
-    if observable_type in VDM_OBSERVABLE_TYPE_NAMES:
-        type_name = VDM_OBSERVABLE_TYPE_NAMES[observable_type]
-    elif observable_type in VDM_OBSERVABLE_TYPE_PRE_FEC_BER_RANGE:
-        type_name = "Pre-FEC BER/FERC statistic (Basic or Statistic, F16) -- exact ID meaning not catalogued"
+    if observable_type in VDM_OBSERVABLE_TYPES:
+        type_name = VDM_OBSERVABLE_TYPES[observable_type][0]
     elif 0x64 <= observable_type <= 0x7F:
         type_name = "Custom Observable (100-127)"
     elif 0x80 <= observable_type <= 0xFF:
         type_name = "Restricted (OIF use), 128-255"
-    elif observable_type == 0:
-        type_name = VDM_OBSERVABLE_TYPE_NAMES[0]
     else:
         type_name = "reserved/unknown"
 
@@ -719,6 +760,26 @@ def parse_vdm_descriptor(even_byte, odd_byte):
         "observable_type_name": type_name,
         "is_used": observable_type != 0x00,
     }
+
+
+def interpret_vdm_sample(raw16, observable_type):
+    """Interpret a raw VDM sample (already combined big-endian, from
+    parse_vdm_sample_page()) using its paired descriptor's observable_type
+    -- returns (value, unit) or (None, None) if the type isn't catalogued
+    (VDM_OBSERVABLE_TYPES) or is NotUsed."""
+    entry = VDM_OBSERVABLE_TYPES.get(observable_type)
+    if entry is None or entry[1] is None:
+        return None, None
+
+    _, _, data_type, scale, unit = entry
+    if data_type == "F16":
+        return decode_f16(raw16), unit
+    if data_type == "S16":
+        signed = raw16 - 0x10000 if raw16 >= 0x8000 else raw16
+        return signed * scale, unit
+    if data_type == "U16":
+        return raw16 * scale, unit
+    return None, None
 
 
 def parse_vdm_descriptor_page(data, page):
@@ -977,6 +1038,36 @@ _DIAG_SELECTOR_COUNTER_SET = {
     DIAG_SELECTOR_HOST_COUNTERS_1_4_GATED, DIAG_SELECTOR_HOST_COUNTERS_5_8_GATED,
     DIAG_SELECTOR_MEDIA_COUNTERS_1_4_GATED, DIAG_SELECTOR_MEDIA_COUNTERS_5_8_GATED,
 }
+_DIAG_SELECTOR_BER_SET = {DIAG_SELECTOR_BER_REALTIME, DIAG_SELECTOR_BER_GATED}
+
+
+def parse_page14_ber(diagnostics_data):
+    """Decode the 64-byte Diagnostics Data window when DiagnosticsSelector
+    is 0x01 or 0x11 (BER, real-time or gated, Table 8-116): Host Lane 1-8
+    BER at bytes 192-207 (relative offset 0-15), Media Lane 1-8 BER at
+    bytes 208-223 (offset 16-31) -- offsets 32-63 unused/reserved. Each
+    value is CMIS's F16 type (see decode_f16()).
+
+    BYTE ORDER CAVEAT: the spec explicitly states VDM's F16 fields are
+    Big Endian specifically to contrast them with Page 13h/14h's Module
+    Diagnostics observables -- implying THIS page's multi-byte fields use
+    a different (little-endian) convention, consistent with this
+    project's earlier finding that Page 14h's U64 error counters are
+    little-endian. Implemented as little-endian here to match that
+    pattern, but (like several other Page 14h specifics) this exact
+    byte-order claim for the BER field specifically was not independently
+    re-confirmed against a byte-offset table stating it explicitly.
+    """
+    if len(diagnostics_data) < 32:
+        raise ValueError(f"expected at least 32 bytes of Diagnostics Data for BER, got {len(diagnostics_data)}")
+
+    def _f16_le(offset):
+        raw = (diagnostics_data[offset + 1] << 8) | diagnostics_data[offset]
+        return decode_f16(raw)
+
+    host_ber = [_f16_le(lane * 2) for lane in range(8)]
+    media_ber = [_f16_le(16 + lane * 2) for lane in range(8)]
+    return {"host_ber": host_ber, "media_ber": media_ber}
 
 
 def parse_page14_error_counters(diagnostics_data):
@@ -1030,6 +1121,8 @@ def parse_page14_status(data):
     }
     if selector in _DIAG_SELECTOR_COUNTER_SET:
         result["lane_counters"] = parse_page14_error_counters(window)
+    elif selector in _DIAG_SELECTOR_BER_SET:
+        result["ber"] = parse_page14_ber(window)
     return result
 
 
@@ -1158,6 +1251,25 @@ def parse_page1c_nad(data, bank_index=0):
             "is_network_path": bool((byte5 >> 7) & 0x1),
         })
     return descriptors
+
+
+# --- F16 data type (Section 3.4 "Data Types", confirmed identical text --
+# in CMIS 4.0 through 5.4): a compact, non-negative-only 16-bit float
+# (originally from SFF-8636), NOT IEEE 754 binary16. Bit layout: bits
+# 15-11 (top 5 bits of the big-endian-combined 16-bit value) = Scaled
+# Exponent s (0-31); bits 10-0 (bottom 11 bits) = Mantissa m (0-2047).
+# Value = m * 10^(s-24) -- range 1e-24 (smallest non-zero) to 2.047e10
+# (largest). No worked example exists anywhere in the fetched spec text
+# (4.0-5.4) to cross-check this formula against -- implemented directly
+# from the formal bit-layout table/formula, not validated against a
+# known-good input/output pair.
+def decode_f16(raw16):
+    """Decode a raw 16-bit integer (already combined from its 2 bytes,
+    regardless of which endianness those bytes were read in) as CMIS's
+    F16 data type. Returns a float."""
+    s = (raw16 >> 11) & 0x1F
+    m = raw16 & 0x7FF
+    return m * (10.0 ** (s - 24))
 
 
 # --- Page 03h: User EEPROM (Section 8.6, p.140) ---------------------------

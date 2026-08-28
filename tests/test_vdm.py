@@ -51,11 +51,19 @@ def test_vdm_descriptors_and_samples(bridge, module_info):
         print(f"[cmis-discover] VDM group {group_index + 1}: {len(used)} of 64 instances in use")
         for instance_index, descriptor in used:
             sample = group["samples"][instance_index]
-            print(
-                f"[cmis-discover]   instance {instance_index + 1}: "
-                f"{descriptor['observable_type_name']}, resource={descriptor['monitored_resource']}, "
-                f"raw_sample=0x{sample:04x} ({sample})"
-            )
+            value, unit = cmis.interpret_vdm_sample(sample, descriptor["observable_type"])
+            if value is not None:
+                print(
+                    f"[cmis-discover]   instance {instance_index + 1}: "
+                    f"{descriptor['observable_type_name']} = {value:g} {unit or ''} "
+                    f"(resource={descriptor['monitored_resource']})"
+                )
+            else:
+                print(
+                    f"[cmis-discover]   instance {instance_index + 1}: "
+                    f"{descriptor['observable_type_name']}, resource={descriptor['monitored_resource']}, "
+                    f"raw_sample=0x{sample:04x} ({sample}) -- not decodable (uncatalogued observable type)"
+                )
 
 
 def test_vdm_freeze_unfreeze_handshake(bridge, module_info):

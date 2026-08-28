@@ -36,6 +36,23 @@ def test_read_module_state(module_info):
     assert name != "Reserved", "module reported the explicitly-reserved 000b module_state"
 
 
+def test_flat_memory_module_always_reports_ready(module_info):
+    """Confirmed spec text (Section 6.3.2.3): "Flat memory modules shall
+    statically report a module state of ModuleReady" -- state transitions
+    for a Flat Memory module happen without host interaction and are, per
+    the spec's own words, "just a specification formalism." Only
+    meaningful (and only runs) for a module reporting the Flat memory
+    model; skipped otherwise."""
+    if module_info["memory_model"] != cmis.MEMORY_MODEL_FLAT:
+        import pytest
+        pytest.skip("module reports Paged memory model -- this check is Flat-only")
+
+    assert module_info["module_state"] == cmis.MODULE_STATE_READY, (
+        f"Flat Memory module reported module_state={module_info['module_state']:03b}b, "
+        f"expected ModuleReady (011b) per Section 6.3.2.3's 'shall statically report' rule"
+    )
+
+
 def test_read_environmental_monitors(module_info):
     """Confirm the temperature and VCC monitors (bytes 14-15, 16-17) are
     at least in a physically plausible range -- this can't validate
