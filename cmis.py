@@ -426,16 +426,16 @@ PAGE01_SUPCTL_TRANSMITTER_TUNABLE_BIT = 6  # 1 => Pages 04h and 12h supported
 
 PAGE01_CDB_FUNCTIONALITY = (0xA3, 4)  # bytes 163-166 (Table 8-48)
 
-# Byte 162 (0xA2) -- bits confirmed via a dedicated research pass:
+# Byte 162 (0xA2), Table 8-53 (CMIS 5.3+) -- both bits confirmed verbatim:
 # bit 6 = UnidirReconfigSupported (gates Page 19h's Tx/Rx Data Path
-# Config sub-fields); bit 7's field NAME was not captured verbatim by
-# that pass (inferred as something like "CmisVcsSupported" from context,
-# gating the Versatile Control Set parameter space referenced by Pages
-# 18h/19h in CMIS 5.3) -- flagged as a lower-confidence bit than the rest
-# of this file's Page 01h decoding.
+# Config sub-fields); bit 7 = VersatileControlSetSupported ("CMIS-VCS
+# functionality is ... supported, for all supported Staged Control
+# Sets" -- gates the VCS parameter space on Pages 18h/19h). Bit 7 doesn't
+# exist before CMIS 5.3 (reads as 0 on older-revision modules, which is
+# the correct answer there too -- VCS didn't exist yet).
 PAGE01_BYTE_162 = 0xA2
 PAGE01_UNIDIR_RECONFIG_SUPPORTED_BIT = 6
-PAGE01_VCS_SUPPORTED_BIT = 7  # NOTE: field name inferred, not verbatim from spec text
+PAGE01_VCS_SUPPORTED_BIT = 7
 
 # Byte 175 (0xAF) bits 3-0: NADBanksSupported (Table 8-57, CMIS 5.3+) --
 # 0 = NAD/Page 1Ch not supported; n>0 = Page 1Ch supported with n banks
@@ -1346,14 +1346,18 @@ def build_cdb_command(cmd_id, lpl_payload=b""):
     this helper -- those also need writes to Pages A0h-AFh, not attempted
     here yet.
 
-    Checksum (byte 133, CdbChkCode): the spec's prose calls this a "one's
-    complement of the sum" of bytes 128-132 plus the LPL payload, but the
-    0004h Abort command's own worked example (fixed CdbChkCode=FCh for a
-    zero-payload Abort, sum=0x04) only checks out as a NEGATION
-    (two's-complement, `(0x100 - sum) & 0xFF` = 0xFC) -- plain bitwise
-    complement (`~sum & 0xFF`) gives 0xFB instead. Implemented to match
-    the worked example (negation), not the prose, since that's the
-    stronger evidence -- flagged here in case a real module disagrees.
+    Checksum (byte 133, CdbChkCode): a plain one's complement (bitwise
+    NOT) of the sum of bytes 128-132 plus the LPL payload, per Table
+    8-130's own formula text -- confirmed against FIVE independent
+    zero-payload worked examples across CMIS 5.0-5.4 (0040h=BFh,
+    0041h=BEh, 0042h=BDh, 0102h=FCh, 0107h=F7h, all consistent with
+    `0xFF - sum`). The ONE outlier, CMIS 5.0's own Table 9-6 listing
+    0004h Abort's CdbChkCode as FCh, is a documented spec erratum --
+    CMIS 5.1/5.2/5.3/5.4 all correct it to FBh (the value the formula
+    actually produces: 0xFF - 4 = 0xFB). An earlier version of this
+    function used a two's-complement NEGATION formula derived from
+    trusting that erratum at face value; fixed here to match the
+    verified-consistent formula instead.
     """
     if len(lpl_payload) > 120:
         raise ValueError(
@@ -1426,13 +1430,82 @@ def build_cdb_run_firmware_image(image_to_run, delay_to_reset_ms=0):
 
 
 def compute_cdb_checksum(header_prefix_and_lpl):
-    """Negation (two's complement) of the sum of the given bytes, mod 256
-    -- see build_cdb_command()'s docstring for why this, not a plain
-    bitwise complement, matches the spec's own Abort worked example.
+    """One's complement (bitwise NOT) of the sum of the given bytes, mod
+    256 -- see build_cdb_command()'s docstring for the 5 independent
+    worked examples (across CMIS 5.0-5.4) this was verified against.
     `header_prefix_and_lpl` should be bytes 128-132 concatenated with the
     LPL payload (everything build_cdb_command() writes except the
     checksum byte itself)."""
-    return (0x100 - (sum(header_prefix_and_lpl) & 0xFF)) & 0xFF
+    return (~sum(header_prefix_and_lpl)) & 0xFF
+
+
+def parse_cdb_module_features(lpl_payload):
+    """Decode the 0040h Module Features reply LPL body (Table 9-8, CMIS
+    5.0; "Query Module Features" from 5.4 -- byte layout unchanged).
+    `lpl_payload` should start at absolute byte 136 (index 0 == byte 136).
+    Returns the set of supported CMDIDs (from the 32-byte bitmap at
+    bytes 138-169, i.e. indices 2-33) and MaxCompletionTime.
+    """
+    if len(lpl_payload) < 36:
+        raise ValueError(f"expected at least 36 bytes of Module Features reply LPL, got {len(lpl_payload)}")
+
+    supported_cmds = set()
+    for byte_index in range(32):  # bytes 138-169 -> indices 2-33
+        byte_val = lpl_payload[2 + byte_index]
+        for bit in range(8):
+            if byte_val & (1 << bit):
+                supported_cmds.add(byte_index * 8 + bit)
+
+    max_completion_time_idx = 170 - 136  # = 34
+    max_completion_time_ms = (
+        (lpl_payload[max_completion_time_idx] << 8) | lpl_payload[max_completion_time_idx + 1]
+    )
+    return {"supported_cmds": supported_cmds, "max_completion_time_ms": max_completion_time_ms}
+
+
+# --- CDB 0041h Firmware Management Features reply (Table 9-9, p.225-227) --
+CDB_WRITE_MECHANISM_NAMES = {0b00: "none", 0b01: "LPL", 0b10: "EPL", 0b11: "both"}
+CDB_READ_MECHANISM_NAMES = CDB_WRITE_MECHANISM_NAMES
+
+
+def parse_cdb_fw_management_features(lpl_payload):
+    """Decode the 0041h Firmware Management Features reply LPL body.
+    `lpl_payload` should start at absolute byte 136 (index 0 == byte
+    136). MaxDuration* fields (bytes 144-153) are scaled by the
+    MaxDurationCoding bit (byte 137 bit 3: 0=x1, 1=x10) per the field's
+    own documented multiplier.
+    """
+    if len(lpl_payload) < 18:
+        raise ValueError(f"expected at least 18 bytes of FW Management Features reply LPL, got {len(lpl_payload)}")
+
+    byte137 = lpl_payload[1]  # absolute byte 137
+    duration_multiplier = 10 if (byte137 >> 3) & 0x1 else 1
+    read_write_length_ext = lpl_payload[4]  # absolute byte 140
+    epl_max_bytes = min(8 * (1 + read_write_length_ext), 2048)
+    lpl_max_bytes = 8 * (1 + read_write_length_ext) if read_write_length_ext <= 15 else 128
+
+    def _u16(byte_offset):
+        idx = byte_offset - 136
+        return (lpl_payload[idx] << 8) | lpl_payload[idx + 1]
+
+    return {
+        "image_readback_supported": bool((byte137 >> 7) & 0x1),
+        "skipping_erased_blocks_supported": bool((byte137 >> 2) & 0x1),
+        "copy_cmd_supported": bool((byte137 >> 1) & 0x1),
+        "abort_cmd_supported": bool(byte137 & 0x1),
+        "start_cmd_payload_size": lpl_payload[2],  # byte 138
+        "erased_byte": lpl_payload[3],             # byte 139
+        "epl_max_bytes": epl_max_bytes,
+        "lpl_max_bytes": lpl_max_bytes,
+        "write_mechanism": CDB_WRITE_MECHANISM_NAMES.get(lpl_payload[5], "reserved"),  # byte 141
+        "read_mechanism": CDB_READ_MECHANISM_NAMES.get(lpl_payload[6], "reserved"),    # byte 142
+        "hitless_restart": bool(lpl_payload[7] & 0x1),  # byte 143
+        "max_duration_start_ms": _u16(144) * duration_multiplier,
+        "max_duration_abort_ms": _u16(146) * duration_multiplier,
+        "max_duration_write_ms": _u16(148) * duration_multiplier,
+        "max_duration_complete_ms": _u16(150) * duration_multiplier,
+        "max_duration_copy_ms": _u16(152) * duration_multiplier,
+    }
 
 
 def parse_cdb_query_status_reply(lpl_payload):

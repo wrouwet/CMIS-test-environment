@@ -37,21 +37,34 @@ def _require_cdb(bridge, module_info):
     return advertising
 
 
-def test_cdb_command_framing_matches_spec_worked_example():
-    """Pure unit check, no hardware needed: the spec gives one concrete
-    worked example (Table 9-6/Section 9.3.5) -- the 0004h Abort command,
-    sent with no LPL payload, has a FIXED CdbChkCode of FCh. This is the
-    only hard data point available to validate build_cdb_command()'s
-    checksum convention against (see cmis.build_cdb_command()'s docstring
-    for why it uses negation rather than a plain bitwise complement)."""
-    abort = cmis.build_cdb_command(cmis.CDB_CMD_ABORT)
-    checksum = abort[cmis.CDB_CMD_HEADER_CHECKSUM - cmis.CDB_CMD_HEADER_CMDID[0]]
-    print(f"Abort command bytes: {abort.hex()}, checksum byte: 0x{checksum:02x}")
-    assert checksum == 0xFC, (
-        f"expected the spec's documented fixed CdbChkCode 0xFC for a zero-payload "
-        f"Abort command, computed 0x{checksum:02x} -- the checksum algorithm "
-        f"assumption in cmis.compute_cdb_checksum() may be wrong"
-    )
+def test_cdb_command_framing_matches_spec_worked_examples():
+    """Pure unit check, no hardware needed: cmis.compute_cdb_checksum()'s
+    one's-complement formula was verified against FIVE independent
+    zero-payload worked examples spanning CMIS 5.0-5.4 (Table 9-6 through
+    9-9 area): 0040h=BFh, 0041h=BEh, 0042h=BDh, 0102h=FCh, 0107h=F7h.
+
+    Deliberately does NOT test 0004h Abort here even though it's also a
+    zero-payload command with a published CdbChkCode: CMIS 5.0's own
+    Table 9-6 lists it as FCh, which is a documented spec erratum
+    (corrected to FBh -- the value this formula actually produces -- in
+    every subsequent revision, 5.1 through 5.4). Testing against the
+    corrected value here to guard against ever regressing back toward
+    the erratum by mistake."""
+    expected = {
+        cmis.CDB_CMD_MODULE_FEATURES: 0xBF,
+        cmis.CDB_CMD_FW_MANAGEMENT_FEATURES: 0xBE,
+        cmis.CDB_CMD_ABORT_FIRMWARE_DOWNLOAD: 0xFC,
+        cmis.CDB_CMD_COMPLETE_FIRMWARE_DOWNLOAD: 0xF7,
+        cmis.CDB_CMD_ABORT: 0xFB,  # corrected value, NOT the CMIS 5.0 erratum (0xFC)
+    }
+    for cmd_id, expected_checksum in expected.items():
+        command = cmis.build_cdb_command(cmd_id)
+        checksum = command[cmis.CDB_CMD_HEADER_CHECKSUM - cmis.CDB_CMD_HEADER_CMDID[0]]
+        print(f"cmd={cmd_id:#06x}: bytes={command.hex()}, checksum=0x{checksum:02x}")
+        assert checksum == expected_checksum, (
+            f"cmd {cmd_id:#06x}: expected CdbChkCode 0x{expected_checksum:02x}, "
+            f"computed 0x{checksum:02x}"
+        )
 
 
 def test_cdb_query_status(bridge, module_info):
@@ -86,24 +99,45 @@ def test_cdb_abort_is_a_safe_noop(bridge, module_info):
     assert status is not None and status["state"] != "in_progress"
 
 
-def test_cdb_module_and_firmware_management_features(bridge, module_info):
-    """Send Module Features (0040h) and Firmware Management Features
-    (0041h) -- capability-discovery commands a real host would call before
-    attempting a firmware update. This project doesn't have a confirmed
-    byte-level reply layout for these two (unlike Get Firmware Info), so
-    it prints the raw reply bytes for visibility rather than decoding
-    them -- a real module's response here is exactly the kind of data
-    that should feed back into cmis.py once seen."""
+def test_cdb_module_features(bridge, module_info):
+    """Send Module Features (0040h, Table 9-8) and decode which CDB
+    commands the module claims to support -- capability discovery a real
+    host would do before attempting anything CDB-command-specific."""
     _require_cdb(bridge, module_info)
 
-    for name, cmd_id in (("Module Features", cmis.CDB_CMD_MODULE_FEATURES),
-                          ("Firmware Management Features", cmis.CDB_CMD_FW_MANAGEMENT_FEATURES)):
-        cmis_helpers.send_cdb_command(bridge, cmd_id)
-        status = cmis_helpers.poll_cdb_status(bridge)
-        reply = cmis_helpers.read_cdb_reply(bridge)
-        print(f"[cmis-discover] CDB {name} ({cmd_id:#06x}): status={status}, "
-              f"raw reply LPL={reply['lpl_payload'].hex()}")
-        assert status is not None and status["state"] != "in_progress"
+    cmis_helpers.send_cdb_command(bridge, cmis.CDB_CMD_MODULE_FEATURES)
+    status = cmis_helpers.poll_cdb_status(bridge)
+    assert status is not None and status["state"] != "in_progress"
+
+    reply = cmis_helpers.read_cdb_reply(bridge)
+    if status["state"] == "success" and len(reply["lpl_payload"]) >= 36:
+        decoded = cmis.parse_cdb_module_features(reply["lpl_payload"])
+        supported_hex = sorted(f"0x{c:04x}" for c in decoded["supported_cmds"])
+        print(f"[cmis-discover] CDB Module Features: max_completion_time="
+              f"{decoded['max_completion_time_ms']}ms, supported_cmds={supported_hex}")
+    else:
+        print(f"[cmis-discover] CDB Module Features did not return a decodable reply: "
+              f"status={status}, raw={reply['lpl_payload'].hex()}")
+
+
+def test_cdb_firmware_management_features(bridge, module_info):
+    """Send Firmware Management Features (0041h, Table 9-9) and decode
+    the module's firmware-update capabilities/limits (EPL/LPL size
+    limits, supported mechanisms, max command durations) -- exactly the
+    data a real firmware-update client needs before starting."""
+    _require_cdb(bridge, module_info)
+
+    cmis_helpers.send_cdb_command(bridge, cmis.CDB_CMD_FW_MANAGEMENT_FEATURES)
+    status = cmis_helpers.poll_cdb_status(bridge)
+    assert status is not None and status["state"] != "in_progress"
+
+    reply = cmis_helpers.read_cdb_reply(bridge)
+    if status["state"] == "success" and len(reply["lpl_payload"]) >= 18:
+        decoded = cmis.parse_cdb_fw_management_features(reply["lpl_payload"])
+        print(f"[cmis-discover] CDB Firmware Management Features: {decoded}")
+    else:
+        print(f"[cmis-discover] CDB Firmware Management Features did not return a decodable "
+              f"reply: status={status}, raw={reply['lpl_payload'].hex()}")
 
 
 def test_cdb_rejects_bad_checksum(bridge, module_info):

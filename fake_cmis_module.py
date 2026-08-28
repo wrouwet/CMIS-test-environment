@@ -321,8 +321,20 @@ class FakeCmisModule:
             return True, None, bytes([2, self._unlock_status])
         if cmd_id == cmis.CDB_CMD_ABORT:
             return True, None, b""
-        if cmd_id in (cmis.CDB_CMD_MODULE_FEATURES, cmis.CDB_CMD_FW_MANAGEMENT_FEATURES):
-            return True, None, bytes([0xAA, 0xBB, 0xCC, 0xDD])
+        if cmd_id == cmis.CDB_CMD_MODULE_FEATURES:
+            reply = bytearray(36)
+            reply[2] = 0b00010001  # CMDIDs 0x00 (Query Status) and 0x04 (Abort) supported
+            reply[34:36] = (500).to_bytes(2, "big")  # MaxCompletionTime = 500ms
+            return True, None, bytes(reply)
+        if cmd_id == cmis.CDB_CMD_FW_MANAGEMENT_FEATURES:
+            reply = bytearray(18)
+            reply[1] = 0b00000011  # copy + abort supported, x1 duration multiplier
+            reply[2] = 116  # StartCmdPayloadSize
+            reply[3] = 0xFF  # ErasedByte
+            reply[4] = 15    # ReadWriteLengthExt -> 128 byte EPL/LPL max
+            reply[5] = 0b11  # WriteMechanism = both
+            reply[6] = 0b01  # ReadMechanism = LPL
+            return True, None, bytes(reply)
         if cmd_id == cmis.CDB_CMD_GET_FIRMWARE_INFO:
             return True, None, bytes([0x01, 0x01, 0x01, 0x00])  # bank A operational, image A present, v1.0
         if cmd_id == cmis.CDB_CMD_ENTER_PASSWORD:
