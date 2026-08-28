@@ -132,15 +132,34 @@ def poll_cdb_status(bridge, instance=1, timeout_s=2.0, interval_s=0.1):
 
 def read_cdb_reply(bridge):
     """Read back Page 9Fh and decode the CDB reply header (Table 8-131)
-    plus, for an LPL-only reply, the LPL payload bytes themselves."""
+    plus the reply body -- LPL payload bytes for an LPL-only reply, or
+    the concatenated EPL pages (via read_cdb_epl_reply()) for an EPL
+    reply. Reading Pages A0h-AFh is safe regardless of the open
+    checksum-coverage question noted in cmis.build_cdb_command_with_epl()
+    -- it's a read, not a write."""
     data = read_upper_memory(bridge)
     reply = cmis.parse_cdb_reply_header(data)
-    if not reply["is_epl_reply"] and reply["lpl_length"] > 0:
+    if reply["is_epl_reply"]:
+        reply["lpl_payload"] = b""
+        reply["epl_payload"] = read_cdb_epl_reply(bridge, reply["epl_pages"])
+    elif reply["lpl_length"] > 0:
         start = cmis.CDB_LPL_BASE - cmis.UPPER_MEMORY_BASE
         reply["lpl_payload"] = data[start:start + reply["lpl_length"]]
+        reply["epl_payload"] = b""
     else:
         reply["lpl_payload"] = b""
+        reply["epl_payload"] = b""
     return reply
+
+
+def read_cdb_epl_reply(bridge, num_pages):
+    """Read `num_pages` x 128-byte EPL reply pages (A0h-AFh onward) and
+    return them concatenated. Read-only, safe to call regardless of the
+    checksum-coverage question in cmis.build_cdb_command_with_epl()."""
+    chunks = []
+    for i in range(num_pages):
+        chunks.append(read_page(bridge, bank=0x00, page=cmis.PAGE_CDB_EPL_BASE + i))
+    return b"".join(chunks)
 
 
 def try_select_page(bridge, bank, page, settle=True):

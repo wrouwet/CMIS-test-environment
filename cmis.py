@@ -1362,6 +1362,55 @@ def parse_cdb_get_firmware_info(lpl_payload):
     return result
 
 
+def build_cdb_epl_segments(payload):
+    """Split an EPL (Extended Payload) byte string into a list of
+    (page_number, 128_byte_chunk) tuples ready to write to Pages A0h-AFh
+    (PAGE_CDB_EPL_BASE onward), one 128-byte page per chunk, the last
+    chunk zero-padded to 128 bytes. Max 2048 bytes (16 pages) -- the
+    spec's own EPLLength field range (Table 8-130)."""
+    if len(payload) > 2048:
+        raise ValueError(f"EPL payload is {len(payload)} bytes, max 2048 (16 x 128-byte pages)")
+
+    segments = []
+    for i in range(0, len(payload), 128):
+        chunk = payload[i:i + 128].ljust(128, b"\x00")
+        segments.append((PAGE_CDB_EPL_BASE + (i // 128), chunk))
+    return segments
+
+
+def build_cdb_command_with_epl(cmd_id, epl_payload, lpl_payload=b""):
+    """Build a CDB command header (Table 8-130) that references an EPL
+    payload via the EPLLength field, alongside build_cdb_epl_segments()'s
+    page A0h-AFh chunks. Returns (header_bytes_for_page_9f, epl_segments).
+
+    CHECKSUM COVERAGE CAVEAT: Table 8-130 defines CdbChkCode as covering
+    "bytes 128 to (136+LPLLength-1)" -- i.e. the LPL region only. This
+    project has NOT found explicit spec text confirming whether the
+    checksum also covers EPL bytes when EPLLength > 0; implemented here
+    to match the literal LPL-only wording (checksum unaffected by
+    epl_payload's content), but this is a genuine open question, not
+    just an inference from a worked example like compute_cdb_checksum()'s
+    negation-vs-complement caveat. Not used by any live test in this
+    project (see test_cdb.py's module docstring for why EPL-carried
+    commands aren't sent against real hardware) -- exercised only by
+    unit tests against synthetic data.
+    """
+    if len(lpl_payload) > 120:
+        raise ValueError(f"LPL payload is {len(lpl_payload)} bytes, max 120")
+    if len(epl_payload) > 2048:
+        raise ValueError(f"EPL payload is {len(epl_payload)} bytes, max 2048")
+
+    epl_length = len(epl_payload)
+    header_prefix = bytes([
+        (cmd_id >> 8) & 0xFF, cmd_id & 0xFF,
+        (epl_length >> 8) & 0xFF, epl_length & 0xFF,
+        len(lpl_payload) & 0xFF,
+    ])
+    checksum = compute_cdb_checksum(header_prefix + lpl_payload)
+    header = header_prefix + bytes([checksum]) + lpl_payload
+    return header, build_cdb_epl_segments(epl_payload)
+
+
 def parse_cdb_reply_header(data):
     """Decode the 2-byte CDB reply header (Table 8-131) from a Page 9Fh
     read. `data` must be exactly 128 bytes starting at address 0x80.
