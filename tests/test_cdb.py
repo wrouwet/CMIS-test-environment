@@ -107,6 +107,57 @@ def test_cdb_module_and_firmware_management_features(bridge, module_info):
         assert status is not None and status["state"] != "in_progress"
 
 
+def test_cdb_rejects_bad_checksum(bridge, module_info):
+    """Negative-path test: send a syntactically well-formed Query Status
+    command with a deliberately corrupted CdbChkCode byte, and confirm
+    the module reports CdbStatus failure with result code 0x05
+    ('CdbChkCode error', Table 8-13) -- not silently accepting it, and
+    not crashing/hanging. This is the only negative-path CDB test this
+    project sends live, since corrupting a command that would otherwise
+    have a real side effect risks the module executing something
+    unintended if it turns out to (incorrectly) ignore the bad checksum;
+    Query Status has no side effect either way, making it safe to use
+    for this specific check.
+    """
+    _require_cdb(bridge, module_info)
+
+    good_command = bytearray(cmis.build_cdb_query_status())
+    checksum_index = cmis.CDB_CMD_HEADER_CHECKSUM - cmis.CDB_CMD_HEADER_CMDID[0]
+    good_command[checksum_index] ^= 0xFF  # guaranteed different from the correct value
+    cmis_helpers.send_cdb_full_command(bridge, bytes(good_command))
+
+    status = cmis_helpers.poll_cdb_status(bridge)
+    print(f"[cmis-discover] CDB bad-checksum outcome: {status}")
+    assert status is not None and status["state"] != "in_progress"
+    assert status["state"] == "failed", (
+        f"sent Query Status with a deliberately corrupted checksum, but the module "
+        f"reported '{status['state']}' instead of 'failed' -- it may not be validating "
+        f"CdbChkCode at all"
+    )
+    if status["result_code"] != cmis.CDB_RESULT_FAILED_CHECKSUM_ERROR:
+        print(f"[cmis-discover] module failed the bad-checksum command but with result "
+              f"code 0x{status['result_code']:02x} ({status['meaning']}), not the expected "
+              f"0x05 CdbChkCode error -- still a failure, just not the exact reason expected")
+
+
+def test_cdb_rejects_unknown_cmdid(bridge, module_info):
+    """Negative-path test: send a CMDID from a range no CDB command in
+    this project's researched spec text (4.0-5.3) defines, and confirm
+    the module reports failure -- ideally result code 0x01 ('CMDID
+    unknown', Table 8-13), though this is soft-checked since a vendor
+    could legitimately implement a custom command in this space."""
+    _require_cdb(bridge, module_info)
+
+    UNASSIGNED_CMDID = 0xFFFE  # not defined by any researched CDB command table
+    cmis_helpers.send_cdb_command(bridge, UNASSIGNED_CMDID)
+    status = cmis_helpers.poll_cdb_status(bridge)
+    print(f"[cmis-discover] CDB unknown-CMDID (0x{UNASSIGNED_CMDID:04x}) outcome: {status}")
+    assert status is not None and status["state"] != "in_progress"
+    if status["state"] != "failed":
+        print(f"[cmis-discover] module reported '{status['state']}' for an unassigned CMDID "
+              f"-- either it implements a vendor-custom command here, or doesn't validate CMDID")
+
+
 def test_cdb_get_firmware_info(bridge, module_info):
     """Send Get Firmware Info (0100h) and decode the reply (Table 9-15) --
     this is a read, safe to send unconditionally. Only prints/soft-checks
