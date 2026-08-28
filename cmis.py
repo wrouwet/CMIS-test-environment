@@ -363,6 +363,17 @@ def verify_page01_checksum(data):
 # Alarm, High Warning, Low Warning (8 bytes per monitored quantity).
 PAGE02_TEMP_THRESHOLDS = 0x80    # signed, 1/256 degC
 PAGE02_VCC_THRESHOLDS = 0x88     # unsigned, 100uV
+# Lane-specific quads, bytes 176-199 (Table 8-55): three quantities x 8
+# bytes = 24 bytes, exactly filling the range. Byte ORDER within the
+# range (TxPower, then Bias, then RxPower) is an INFERENCE from the
+# conventional SFF/CMIS field-listing order (matches how Table 8-55 lists
+# them, and the common SFF-8636 convention) -- not an explicitly-stated
+# byte-offset table in the research pass this was transcribed from.
+# Confirm against real Table 8-55 byte offsets before trusting this if a
+# real module's lane thresholds don't make sense.
+PAGE02_TX_POWER_THRESHOLDS = 0xB0   # bytes 176-183, unsigned, 0.1uW
+PAGE02_BIAS_THRESHOLDS = 0xB8       # bytes 184-191, unsigned, 2uA x multiplier (multiplier not decoded here)
+PAGE02_RX_POWER_THRESHOLDS = 0xC0   # bytes 192-199, unsigned, 0.1uW
 PAGE02_CHECKSUM_COVERAGE = (0x80, 0xFF)  # full-range sum, unlike Page 01h
 PAGE02_CHECKSUM_BYTE = 0xFF
 
@@ -379,18 +390,27 @@ def _parse_threshold_quad(data, offset, signed):
 
 
 def parse_page02_thresholds(data):
-    """Decode Page 02h's module-level Temp/VCC threshold quads. `data`
-    must be exactly 128 bytes starting at address 0x80. Lane-specific
-    threshold quads (TxPower/Bias/RxPower, bytes 176-199) and the Aux1-3
-    quads aren't decoded here yet -- add as tests need them."""
+    """Decode Page 02h's module-level Temp/VCC and lane-specific
+    TxPower/Bias/RxPower threshold quads. `data` must be exactly 128
+    bytes starting at address 0x80. The Aux1-3 module-level quads aren't
+    decoded here yet -- add as tests need them. See
+    PAGE02_TX_POWER_THRESHOLDS's comment re: the lane-quad byte ORDER
+    being an inference, not a confirmed table lookup.
+    """
     if len(data) < 128:
         raise ValueError(f"expected 128 bytes of Page 02h, got {len(data)}")
 
     temp = _parse_threshold_quad(data, PAGE02_TEMP_THRESHOLDS, signed=True)
     vcc = _parse_threshold_quad(data, PAGE02_VCC_THRESHOLDS, signed=False)
+    tx_power = _parse_threshold_quad(data, PAGE02_TX_POWER_THRESHOLDS, signed=False)
+    bias = _parse_threshold_quad(data, PAGE02_BIAS_THRESHOLDS, signed=False)
+    rx_power = _parse_threshold_quad(data, PAGE02_RX_POWER_THRESHOLDS, signed=False)
     return {
         "temp_c": {k: v / 256.0 for k, v in temp.items()},
         "vcc_v": {k: v * 100e-6 for k, v in vcc.items()},
+        "tx_power_uw": {k: v * 0.1 for k, v in tx_power.items()},
+        "bias_ua": {k: v * 2 for k, v in bias.items()},  # assumes multiplier=1, not decoded
+        "rx_power_uw": {k: v * 0.1 for k, v in rx_power.items()},
     }
 
 

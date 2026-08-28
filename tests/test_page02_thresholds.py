@@ -12,10 +12,15 @@ import cmis_helpers
 
 
 def test_page02_thresholds(bridge, module_info):
-    """Select Page 02h and sanity-check the Temp/VCC threshold quads are
+    """Select Page 02h and sanity-check every decoded threshold quad
+    (module-level Temp/VCC, lane-level TxPower/Bias/RxPower) is
     internally ordered correctly (High Alarm >= High Warning >= Low
     Warning >= Low Alarm) -- this doesn't need to know the module's
-    actual thresholds to catch a byte-order/field-offset bug."""
+    actual thresholds to catch a byte-order/field-offset bug. Note: the
+    lane-quad byte ordering (cmis.PAGE02_TX_POWER_THRESHOLDS etc.) is
+    flagged in cmis.py as an inference pending independent confirmation
+    -- if only the lane quads fail this check, that's the most likely
+    place to look first."""
     if module_info["memory_model"] == cmis.MEMORY_MODEL_FLAT:
         pytest.skip("module reports Flat Memory model -- Page 02h isn't supported (Table 8-4)")
 
