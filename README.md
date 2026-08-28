@@ -110,6 +110,15 @@ Without the hardware above connected, expect every test to fail at the
 `bridge` fixture or at bus detection with a clear error -- that's
 expected, not a code bug.
 
+**Dry-running without hardware**: `CMIS_USE_FAKE_BRIDGE=1 .venv/bin/pytest tests/`
+runs the whole suite against `fake_cmis_module.py`, an in-memory CMIS
+module simulator, instead of a real bridge. All 33 tests pass against
+it as of this writing -- this proves the test code itself runs correctly
+end-to-end (real page-select/read/decode/assert round trips, not just
+`--collect-only`), which is a genuinely useful signal while there's no
+real hardware to test against. It is NOT evidence a real module behaves
+this way -- see the file's own docstring for why.
+
 ## Layout
 
 ```
@@ -120,6 +129,8 @@ cmis.py                 CMIS register map, field decoding, checksum/page-
                          full spec citations
 cmis_helpers.py         Shared register-read/page-select plumbing built
                          on bridge.py's generic write()/write_read()
+fake_cmis_module.py     in-memory CMIS module simulator for dry-running the
+                         suite without hardware (CMIS_USE_FAKE_BRIDGE=1)
 conftest.py             pytest fixture that connects the bridge once per session
 tests/config.py         shared constants (module I2C address)
 tests/test_bus.py       bus presence

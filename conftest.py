@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -10,8 +11,18 @@ from bridge import I2CBridge
 
 @pytest.fixture(scope="session")
 def bridge():
-    """A connection to the FRDM-MCXA153 USB-to-I2C bridge, shared across tests."""
-    b = I2CBridge()
+    """A connection to the FRDM-MCXA153 USB-to-I2C bridge, shared across
+    tests -- OR, if CMIS_USE_FAKE_BRIDGE is set, an in-memory CMIS module
+    simulator (see fake_cmis_module.py's module docstring) that lets the
+    whole suite run end-to-end without real hardware, catching real code
+    bugs that pytest --collect-only and cmis.py's own synthetic-buffer
+    unit checks can't. A pass against the fake module is NOT evidence a
+    real module behaves this way -- see that file's docstring."""
+    if os.environ.get("CMIS_USE_FAKE_BRIDGE"):
+        from fake_cmis_module import FakeCmisModule
+        b = FakeCmisModule()
+    else:
+        b = I2CBridge()
     yield b
     b.close()
 
