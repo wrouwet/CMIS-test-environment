@@ -26,10 +26,11 @@ without hardware:
   a real but limited form of confidence: it proves the code does what
   the spec text says, not that the spec text was transcribed correctly,
   and definitely not that a real module actually behaves this way.
-- All 42 tests in `tests/` collect cleanly under pytest (no import/syntax
-  errors) and all 42 PASS against `fake_cmis_module.py`'s in-memory
-  simulator (`CMIS_USE_FAKE_BRIDGE=1`, see "Dry-running" below) -- but
-  none have executed against a real `bridge` fixture / real hardware.
+- All 48 tests in `tests/` collect cleanly under pytest (no import/syntax
+  errors) and 47 PASS + 1 correctly SKIPS against `fake_cmis_module.py`'s
+  in-memory simulator (`CMIS_USE_FAKE_BRIDGE=1`, see "Dry-running"
+  below) -- but none have executed against a real `bridge` fixture /
+  real hardware.
 
 **Treat every byte offset and field meaning as "correctly transcribed
 from the spec", not "confirmed against real silicon", until this
@@ -114,8 +115,10 @@ expected, not a code bug.
 
 **Dry-running without hardware**: `CMIS_USE_FAKE_BRIDGE=1 .venv/bin/pytest tests/`
 runs the whole suite against `fake_cmis_module.py`, an in-memory CMIS
-module simulator, instead of a real bridge. All 42 tests pass against
-it as of this writing -- this proves the test code itself runs correctly
+module simulator, instead of a real bridge. 47 of 48 tests pass against
+it as of this writing (1 correctly skips, a Flat-memory-only check
+against a simulator that reports Paged) -- this proves the test code
+itself runs correctly
 end-to-end (real page-select/read/decode/assert round trips, not just
 `--collect-only`), which is a genuinely useful signal while there's no
 real hardware to test against. It is NOT evidence a real module behaves
@@ -159,6 +162,7 @@ tests/test_vdm.py       Pages 20h-2Fh -- VDM descriptor/sample dump + freeze/unf
 tests/test_cdb.py       CDB (Page 9Fh + Lower Memory CdbStatus): Query Status, Abort,
                          Module/Firmware-Management Features, Get Firmware Info,
                          plus negative-path bad-checksum/unknown-CMDID rejection tests
+tests/test_cdb_epl.py   CDB EPL (Pages A0h-AFh) framing -- unit tests only, no live send
 tests/test_password.py  password mechanism: register-based AND CDB-based (Enter Password) unlock
 tests/test_page12_tunable_laser.py
                          Page 12h -- per-lane grid spacing/channel/frequency/tuning status (read-only)
@@ -252,15 +256,22 @@ guessed):
   side effects on a live module (this would need an actual firmware
   image and explicit opt-in, not something to run unprompted). EPL-carried
   (>120 byte) command payloads (Pages A0h-AFh) also aren't wired up.
-- **VDM Observable Type -> Data Type table** (Table 8-122) is only
-  partially catalogued (IDs 0-2, and the 9-24 Pre-FEC BER/FERC range
-  generically) -- most Observable Type IDs a real module might report
-  will show up as "reserved/unknown" rather than a decoded value; only
-  the raw sample is available for those.
-- **Page 14h's BER/SNR diagnostics selectors** (0x01/0x06 and their
-  gated variants) use CMIS's own F16 (BER) and scaled-U16 (SNR) formats
-  -- not implemented; only the 4-lane U64 error/bit-counter selectors
-  (0x02-0x05, 0x12-0x15) are decoded, since those are plain integers.
+- **VDM Observable Type table** (`cmis.VDM_OBSERVABLE_TYPES`) now covers
+  every ID confirmed across CMIS 4.0-5.4 (0-24 stable since 5.0; 25-26
+  added 5.2; 27-34/77-84 added 5.3) via `interpret_vdm_sample()` --
+  IDs 100-127 (Custom) and 128-255 (Restricted/OIF) are still
+  unavoidably vendor/OIF-specific and not decodable in principle.
+- **Page 14h's SNR selector** (0x06) uses a scaled-U16 format (1/256 dB)
+  -- not implemented; the BER selector (0x01/0x11, F16) and the 4-lane
+  U64 error/bit-counter selectors (0x02-0x05, 0x12-0x15) are decoded.
+- **CMIS's F16 data type** (`cmis.decode_f16()`, used by Page 14h's BER
+  selector and several VDM observables) has NO worked example anywhere
+  in the fetched spec text (4.0-5.4) -- implemented directly from the
+  formal bit-layout/formula (5-bit scaled exponent, base-10, offset -24;
+  11-bit mantissa), not cross-checked against a known-good input/output
+  pair. Page 14h's specific byte-order for this field (assumed
+  little-endian, matching its error counters) is a related inference,
+  not confirmed from an explicit byte-offset table for that field.
 - **Page 05h** (form-factor-specific signals, 5.2+): confirmed to have
   **no byte/bit layout in any of the four fetched CMIS primary spec
   documents (4.0-5.3)** -- it's defined in a separate, at-research-time
