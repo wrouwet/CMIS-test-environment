@@ -34,10 +34,13 @@ class FakeCmisModule:
         self._setup_page01()
         self._setup_page02()
         self.pages[0x03] = bytearray(128)  # User EEPROM, arbitrary content
-        self.pages[0x13] = bytearray(128)  # Diagnostics Control -- advertised by Page 01h below,
-                                            # so it must exist here too for internal consistency
         self._setup_page10_11()
+        self._setup_page12()
+        self._setup_page13_14()
         self._setup_page15()
+        self._setup_page16_17()
+        self._setup_page19()
+        self._setup_page1c()
         self._setup_vdm_pages()
         self.pages[0x9F] = bytearray(128)  # CDB message page
 
@@ -85,9 +88,19 @@ class FakeCmisModule:
             | (1 << cmis.PAGE01_SUPPORTED_PAGES_PAGE03_BIT)
         )
         page[cmis.PAGE01_SUPPORTED_PAGES_BYTE - cmis.UPPER_MEMORY_BASE] = supported_pages
+        page[cmis.PAGE01_SUPPORTED_PAGES_BYTE - cmis.UPPER_MEMORY_BASE] |= (
+            1 << cmis.PAGE01_SUPPORTED_PAGES_NETWORK_PATH_BIT
+        )
         page[cmis.PAGE01_MODULE_CHARACTERISTICS_BYTE - cmis.UPPER_MEMORY_BASE] = (
             1 << cmis.PAGE01_MODCHAR_TIMING_PAGE15H_SUPPORTED_BIT
         )
+        page[cmis.PAGE01_SUPPORTED_CONTROLS_BYTE - cmis.UPPER_MEMORY_BASE] = (
+            1 << cmis.PAGE01_SUPCTL_TRANSMITTER_TUNABLE_BIT
+        )
+        page[cmis.PAGE01_BYTE_162 - cmis.UPPER_MEMORY_BASE] = (
+            1 << cmis.PAGE01_UNIDIR_RECONFIG_SUPPORTED_BIT
+        )
+        page[cmis.PAGE01_NAD_BANKS_BYTE - cmis.UPPER_MEMORY_BASE] = 1  # 1 bank of Page 1Ch
         cdb_off, _ = cmis.PAGE01_CDB_FUNCTIONALITY
         page[cdb_off - cmis.UPPER_MEMORY_BASE] = (1 << 6)  # cdb_instances_supported = 1
         start, end = cmis.PAGE01_CHECKSUM_COVERAGE
@@ -127,6 +140,28 @@ class FakeCmisModule:
         page11[cmis.PAGE11_OUTPUT_STATUS_BYTES[1] - cmis.UPPER_MEMORY_BASE] = 0xFF
         self.pages[0x11] = page11
 
+    # --- Page 12h --------------------------------------------------------
+    def _setup_page12(self):
+        page = bytearray(128)
+        for lane in range(8):
+            page[lane] = (0b0100 << 4)  # 50GHz grid, fine tuning disabled
+            idx_ch = 8 + lane * 2
+            page[idx_ch:idx_ch + 2] = (lane + 1).to_bytes(2, "big", signed=True)
+            idx_freq = 40 + lane * 4
+            page[idx_freq:idx_freq + 4] = (193100000 + lane).to_bytes(4, "big")  # 193.1THz-ish
+            idx_pwr = 72 + lane * 2
+            page[idx_pwr:idx_pwr + 2] = (100).to_bytes(2, "big", signed=True)  # 1.00 dBm
+        self.pages[0x12] = page
+
+    # --- Pages 13h/14h -----------------------------------------------------
+    def _setup_page13_14(self):
+        page13 = bytearray(128)
+        page13[cmis.PAGE13_LOOPBACK_CAPABILITIES_BYTE - cmis.UPPER_MEMORY_BASE] = 0b01111111
+        self.pages[0x13] = page13  # all loopback control bytes left at 0 (disabled)
+
+        page14 = bytearray(128)
+        self.pages[0x14] = page14
+
     # --- Page 15h ------------------------------------------------------
     def _setup_page15(self):
         page = bytearray(128)
@@ -136,6 +171,31 @@ class FakeCmisModule:
             page[idx_rx:idx_rx + 2] = (100 + lane).to_bytes(2, "big")
             page[idx_tx:idx_tx + 2] = (200 + lane).to_bytes(2, "big")
         self.pages[0x15] = page
+
+    # --- Page 16h/17h ------------------------------------------------------
+    def _setup_page16_17(self):
+        page16 = bytearray(128)
+        for offset in cmis.PAGE16_NP_STATUS_BYTES:
+            page16[offset - cmis.UPPER_MEMORY_BASE] = (
+                (cmis.NP_STATE_ACTIVATED << 4) | cmis.NP_STATE_ACTIVATED
+            )
+        self.pages[0x16] = page16
+        self.pages[0x17] = bytearray(128)  # no state-changed flags set
+
+    # --- Page 19h ------------------------------------------------------
+    def _setup_page19(self):
+        page = bytearray(128)
+        for lane in range(8):
+            page[lane] = (0b0001 << 4) | (0b010 << 1) | 0  # AppSel=1, DataPathID=2, explicit=0
+            page[8 + lane] = (0b0001 << 4) | (0b010 << 1) | 0
+        self.pages[0x19] = page
+
+    # --- Page 1Ch ------------------------------------------------------
+    def _setup_page1c(self):
+        page = bytearray(128)
+        # one populated NAD (AppSel 1): host_if=1, media_if=2, 4 host lanes, 4 media lanes
+        page[0], page[1], page[2] = 1, 2, (4 << 4) | 4
+        self.pages[0x1C] = page
 
     # --- VDM pages 20h-2Fh -----------------------------------------------
     def _setup_vdm_pages(self):
@@ -208,6 +268,8 @@ class FakeCmisModule:
             self._execute_cdb_command(bytes(payload))
         if self.page_select == cmis.PAGE_VDM_CONTROL and offset == cmis.PAGE2F_FREEZE_REQUEST_BYTE:
             self._handle_vdm_freeze(payload[0])
+        if self.page_select == cmis.PAGE_DIAG_RESULTS and offset == cmis.PAGE14_DIAGNOSTICS_SELECTOR_BYTE:
+            self._handle_diagnostics_selector(payload[0])
 
     def read(self, addr, n):
         return self.write_read(addr, [0x00], n)
@@ -275,6 +337,17 @@ class FakeCmisModule:
         byte = (0x80 if busy else 0) | (0x40 if failed else 0) | (result & 0x3F)
         self.lower[cmis.CDB_STATUS_1_BYTE] = byte
         self.lower[cmis.CDB_CMD_COMPLETE_FLAG_BYTE] |= 0x40
+
+    def _handle_diagnostics_selector(self, selector):
+        page14 = self.pages[0x14]
+        window_idx = cmis.PAGE14_DIAGNOSTICS_DATA_BASE - cmis.UPPER_MEMORY_BASE
+        window = bytearray(64)
+        if selector == cmis.DIAG_SELECTOR_HOST_COUNTERS_1_4:
+            for lane in range(4):
+                base = lane * 16
+                window[base:base + 8] = (1000 * (lane + 1)).to_bytes(8, "little")
+                window[base + 8:base + 16] = (10_000_000 + lane).to_bytes(8, "little")
+        page14[window_idx:window_idx + 64] = window
 
     def _handle_vdm_freeze(self, freeze_byte):
         page2f = self.pages[cmis.PAGE_VDM_CONTROL]

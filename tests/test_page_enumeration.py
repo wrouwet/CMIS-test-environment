@@ -47,7 +47,8 @@ KNOWN_OPTIONAL_PAGES = {
 # Pages with a dedicated decoder elsewhere in this project -- reported as
 # "selectable" here for completeness, but NOT hex-dumped again (their own
 # test file already does that meaningfully).
-DECODED_ELSEWHERE = {0x00, 0x01, 0x02, 0x03, 0x10, 0x11, 0x15, 0x9F}
+DECODED_ELSEWHERE = {0x00, 0x01, 0x02, 0x03, 0x10, 0x11, 0x12, 0x13, 0x14,
+                      0x15, 0x16, 0x17, 0x19, 0x1C, 0x9F}
 
 
 def test_enumerate_known_optional_pages(bridge, module_info):

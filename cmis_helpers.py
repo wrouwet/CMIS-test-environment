@@ -240,6 +240,47 @@ def write_user_eeprom(bridge, offset, data):
         time.sleep(cmis.T_WRITE_NV_MS / 1000.0)
 
 
+def read_page12_tunable_laser(bridge):
+    return cmis.parse_page12_tunable_laser(read_page(bridge, bank=0x00, page=cmis.PAGE_TUNABLE_LASER))
+
+
+def read_page13_loopback_capabilities(bridge):
+    data = read_page(bridge, bank=0x00, page=cmis.PAGE_DIAG_CONTROL)
+    return cmis.parse_page13_loopback_capabilities(data[cmis.PAGE13_LOOPBACK_CAPABILITIES_BYTE - cmis.UPPER_MEMORY_BASE])
+
+
+def read_page13_loopback_controls(bridge):
+    return cmis.parse_page13_loopback_controls(read_page(bridge, bank=0x00, page=cmis.PAGE_DIAG_CONTROL))
+
+
+def read_page14_status(bridge, selector=None):
+    """Select Page 14h; if `selector` is given, write it to
+    DiagnosticsSelector first (a safe, non-traffic-affecting mux change,
+    unlike Page 13h's loopback controls) and wait tWRITE before reading."""
+    select_page(bridge, bank=0x00, page=cmis.PAGE_DIAG_RESULTS)
+    if selector is not None:
+        bridge.write(cmis.CMIS_I2C_ADDR, [cmis.PAGE14_DIAGNOSTICS_SELECTOR_BYTE, selector])
+        time.sleep(cmis.T_WRITE_MS / 1000.0)
+    return cmis.parse_page14_status(read_upper_memory(bridge))
+
+
+def read_page16_network_path_status(bridge):
+    return cmis.parse_page16_network_path_status(read_page(bridge, bank=0x00, page=cmis.PAGE_NETWORK_PATH))
+
+
+def read_page17_np_flags(bridge):
+    return cmis.parse_page17_np_flags(read_page(bridge, bank=0x00, page=cmis.PAGE_NETWORK_PATH_FLAGS))
+
+
+def read_page19_datapath_config(bridge):
+    return cmis.parse_page19_datapath_config(read_page(bridge, bank=0x00, page=cmis.PAGE_DATAPATH_CONFIG))
+
+
+def read_page1c_nad(bridge, bank_index=0):
+    data = read_page(bridge, bank=bank_index, page=cmis.PAGE_NORMALIZED_APP_DESCRIPTORS)
+    return cmis.parse_page1c_nad(data, bank_index=bank_index)
+
+
 def select_page(bridge, bank, page, settle=True):
     """Select a bank/page by writing both PageMapping bytes together
     (Section 8.2.13), then wait out the documented tBPC hold-off before

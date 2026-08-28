@@ -376,6 +376,12 @@ PAGE_VDM_THRESHOLDS_BASE = 0x28     # 0x28-0x2B
 PAGE_VDM_FLAGS = 0x2C
 PAGE_VDM_MASKS = 0x2D
 PAGE_VDM_CONTROL = 0x2F
+PAGE_FORM_FACTOR = 0x05             # 5.2+; no byte layout in any fetched primary spec (see PAGE01_SUPPORTED_PAGES_FORM_FACTOR_BIT)
+PAGE_NETWORK_PATH = 0x16            # 5.1+
+PAGE_NETWORK_PATH_FLAGS = 0x17      # 5.1+
+PAGE_NAD_EXPANSION = 0x18           # 5.3+; reserved-but-empty in 5.2
+PAGE_DATAPATH_CONFIG = 0x19         # 5.2+
+PAGE_NORMALIZED_APP_DESCRIPTORS = 0x1C  # 5.3+
 PAGE_CDB_MESSAGE = 0x9F
 PAGE_CDB_EPL_BASE = 0xA0             # 0xA0-0xAF, 16 x 128-byte EPL segments
 
@@ -388,8 +394,10 @@ PAGE01_INACTIVE_HW_REV = (0x82, 2)   # bytes 130-131: major, minor
 
 # Byte 142 (Table 8-40 "Supported Pages Advertising") -- confirmed bit-by-bit:
 PAGE01_SUPPORTED_PAGES_BYTE = 0x8E
+PAGE01_SUPPORTED_PAGES_NETWORK_PATH_BIT = 7  # Pages 16h/17h supported (5.1+)
 PAGE01_SUPPORTED_PAGES_VDM_BIT = 6        # Pages 20h-2Fh (partially) supported
 PAGE01_SUPPORTED_PAGES_DIAG_BIT = 5       # banked Pages 13h/14h supported
+PAGE01_SUPPORTED_PAGES_FORM_FACTOR_BIT = 3  # Page 05h (5.2+: Page05hSupported; 5.3: CmisFfSupported) -- NOTE: no byte layout for Page 05h exists in ANY fetched CMIS primary spec (4.0-5.3); it's defined in a separate, at-fetch-time unpublished supplement (OIF-CMIS-FF-01.0). Presence-only, no content decoding possible.
 PAGE01_SUPPORTED_PAGES_PAGE03_BIT = 2     # Page 03h (User EEPROM) supported
 PAGE01_SUPPORTED_PAGES_BANKS_MASK = 0x3   # bits 1-0: BanksSupported
 BANKS_SUPPORTED_NAMES = {
@@ -413,6 +421,25 @@ PAGE01_SUPCTL_WAVELENGTH_CONTROLLABLE_BIT = 7
 PAGE01_SUPCTL_TRANSMITTER_TUNABLE_BIT = 6  # 1 => Pages 04h and 12h supported
 
 PAGE01_CDB_FUNCTIONALITY = (0xA3, 4)  # bytes 163-166 (Table 8-48)
+
+# Byte 162 (0xA2) -- bits confirmed via a dedicated research pass:
+# bit 6 = UnidirReconfigSupported (gates Page 19h's Tx/Rx Data Path
+# Config sub-fields); bit 7's field NAME was not captured verbatim by
+# that pass (inferred as something like "CmisVcsSupported" from context,
+# gating the Versatile Control Set parameter space referenced by Pages
+# 18h/19h in CMIS 5.3) -- flagged as a lower-confidence bit than the rest
+# of this file's Page 01h decoding.
+PAGE01_BYTE_162 = 0xA2
+PAGE01_UNIDIR_RECONFIG_SUPPORTED_BIT = 6
+PAGE01_VCS_SUPPORTED_BIT = 7  # NOTE: field name inferred, not verbatim from spec text
+
+# Byte 175 (0xAF) bits 3-0: NADBanksSupported (Table 8-57, CMIS 5.3+) --
+# 0 = NAD/Page 1Ch not supported; n>0 = Page 1Ch supported with n banks
+# (15 Application descriptors per bank). Byte doesn't exist as this field
+# in CMIS 5.0/5.1/5.2 -- reading it on those revisions is meaningless
+# (harmless, just always 0 since Page 1Ch didn't exist yet).
+PAGE01_NAD_BANKS_BYTE = 0xAF
+PAGE01_NAD_BANKS_MASK = 0xF
 # Checksum coverage is DELIBERATELY DIFFERENT from Page 00h's: it excludes
 # bytes 128-129 (InactiveFirmwareRevision), "to avoid requiring a Memory
 # Map update when firmware is updated" (Table 8-36 note). Do not reuse
@@ -442,13 +469,17 @@ def parse_page01_advertising(data):
     supported_pages = _u8(PAGE01_SUPPORTED_PAGES_BYTE)
     modchar = _u8(PAGE01_MODULE_CHARACTERISTICS_BYTE)
     supctl = _u8(PAGE01_SUPPORTED_CONTROLS_BYTE)
+    byte162 = _u8(PAGE01_BYTE_162)
+    nad_banks = _u8(PAGE01_NAD_BANKS_BYTE) & PAGE01_NAD_BANKS_MASK
 
     return {
         "inactive_fw_rev": (_u8(PAGE01_INACTIVE_FW_REV[0]), _u8(PAGE01_INACTIVE_FW_REV[0] + 1)),
         "inactive_hw_rev": (_u8(PAGE01_INACTIVE_HW_REV[0]), _u8(PAGE01_INACTIVE_HW_REV[0] + 1)),
         "supported_pages_byte": supported_pages,
+        "network_path_pages_supported": bool((supported_pages >> PAGE01_SUPPORTED_PAGES_NETWORK_PATH_BIT) & 0x1),
         "vdm_pages_supported": bool((supported_pages >> PAGE01_SUPPORTED_PAGES_VDM_BIT) & 0x1),
         "diagnostic_pages_supported": bool((supported_pages >> PAGE01_SUPPORTED_PAGES_DIAG_BIT) & 0x1),
+        "form_factor_page_supported": bool((supported_pages >> PAGE01_SUPPORTED_PAGES_FORM_FACTOR_BIT) & 0x1),
         "page03_user_eeprom_supported": bool((supported_pages >> PAGE01_SUPPORTED_PAGES_PAGE03_BIT) & 0x1),
         "banks_supported": supported_pages & PAGE01_SUPPORTED_PAGES_BANKS_MASK,
         "cooling_implemented": bool((modchar >> PAGE01_MODCHAR_COOLING_IMPLEMENTED_BIT) & 0x1),
@@ -456,6 +487,9 @@ def parse_page01_advertising(data):
         "timing_page15h_supported": bool((modchar >> PAGE01_MODCHAR_TIMING_PAGE15H_SUPPORTED_BIT) & 0x1),
         "wavelength_controllable": bool((supctl >> PAGE01_SUPCTL_WAVELENGTH_CONTROLLABLE_BIT) & 0x1),
         "transmitter_tunable": bool((supctl >> PAGE01_SUPCTL_TRANSMITTER_TUNABLE_BIT) & 0x1),
+        "unidir_reconfig_supported": bool((byte162 >> PAGE01_UNIDIR_RECONFIG_SUPPORTED_BIT) & 0x1),
+        "vcs_supported": bool((byte162 >> PAGE01_VCS_SUPPORTED_BIT) & 0x1),
+        "nad_banks_supported": nad_banks,  # 0 = Page 1Ch not supported; n>0 = n banks
         "cdb_instances_supported": (cdb0 >> 6) & 0x3,
         "cdb_background_mode_supported": bool((cdb0 >> 5) & 0x1),
         "cdb_auto_paging_supported": bool((cdb0 >> 4) & 0x1),
@@ -793,6 +827,337 @@ def parse_page15_timing(data):
         "rx_latency_ns": _lane_values(PAGE15_RX_LATENCY_BASE),
         "tx_latency_ns": _lane_values(PAGE15_TX_LATENCY_BASE),
     }
+
+
+# --- Page 12h: Tunable Laser Control/Status (Section 8.10/8.11 depending --
+# on revision, Tables 8-88/8-65 in 5.0) -- confirmed byte-identical across
+# CMIS 5.0-5.3 (only the GridSpacing encoding gained a 150GHz value at
+# 5.3). Optional, advertised via Page 01h's transmitter_tunable bit
+# (byte 155 bit 6). Per-lane (8 lanes), lane n at byte (base + (n-1) or
+# (n-1)*width depending on field width). This page has NO Page Checksum
+# (explicitly noted in its own overview table).
+PAGE12_GRID_SPACING_BASE = 0x80        # bytes 128-135, 1 byte/lane
+PAGE12_CHANNEL_NUMBER_BASE = 0x88      # bytes 136-151, S16/lane
+PAGE12_FINE_TUNING_OFFSET_BASE = 0x98  # bytes 152-167, S16/lane, units 0.001 GHz
+PAGE12_LASER_FREQUENCY_BASE = 0xA8     # bytes 168-199, U32/lane, units 0.001 GHz
+PAGE12_TARGET_OUTPUT_POWER_BASE = 0xC8  # bytes 200-215, S16/lane, units 0.01 dBm
+PAGE12_STATUS_INDICATORS_BASE = 0xDE   # bytes 222-229, 1 byte/lane
+PAGE12_FLAG_SUMMARY_BYTE = 0xE6        # byte 230, 1 bit/lane
+PAGE12_FLAGS_BASE = 0xE7               # bytes 231-238, 1 byte/lane
+PAGE12_MASKS_BASE = 0xEF               # bytes 239-246, 1 byte/lane, default 1 (masked)
+
+GRID_SPACING_NAMES = {
+    0b0000: "3.125GHz", 0b0001: "6.25GHz", 0b0010: "12.5GHz", 0b0011: "25GHz",
+    0b0100: "50GHz", 0b0101: "100GHz", 0b0110: "33GHz", 0b0111: "75GHz",
+    0b1000: "150GHz",  # added in CMIS 5.3; reserved/undefined on 5.0-5.2
+    0b1111: "not available",
+}
+PAGE12_FLAG_BIT_NAMES = {
+    5: "target_output_power_oor", 4: "fine_tuning_out_of_range",
+    3: "tuning_not_accepted", 2: "invalid_channel_number",
+    1: "wavelength_unlocked", 0: "tuning_complete",
+}
+
+
+def parse_page12_tunable_laser(data):
+    """Decode Page 12h's per-lane tunable-laser control/status fields.
+    `data` must be exactly 128 bytes starting at 0x80. Returns 1-indexed
+    lane numbers, matching the spec's own Tx<n> naming."""
+    if len(data) < 128:
+        raise ValueError(f"expected 128 bytes of Page 12h, got {len(data)}")
+
+    def _s16(base, lane):
+        idx = (base - UPPER_MEMORY_BASE) + (lane - 1) * 2
+        raw = (data[idx] << 8) | data[idx + 1]
+        return raw - 0x10000 if raw >= 0x8000 else raw
+
+    def _u32(base, lane):
+        idx = (base - UPPER_MEMORY_BASE) + (lane - 1) * 4
+        return (data[idx] << 24) | (data[idx + 1] << 16) | (data[idx + 2] << 8) | data[idx + 3]
+
+    lanes = {}
+    for lane in range(1, 9):
+        grid_byte = data[(PAGE12_GRID_SPACING_BASE - UPPER_MEMORY_BASE) + (lane - 1)]
+        grid_code = (grid_byte >> 4) & 0xF
+        status_byte = data[(PAGE12_STATUS_INDICATORS_BASE - UPPER_MEMORY_BASE) + (lane - 1)]
+        flags_byte = data[(PAGE12_FLAGS_BASE - UPPER_MEMORY_BASE) + (lane - 1)]
+        masks_byte = data[(PAGE12_MASKS_BASE - UPPER_MEMORY_BASE) + (lane - 1)]
+
+        lanes[lane] = {
+            "grid_spacing": GRID_SPACING_NAMES.get(grid_code, "reserved"),
+            "fine_tuning_enabled": bool(grid_byte & 0x1),
+            "channel_number": _s16(PAGE12_CHANNEL_NUMBER_BASE, lane),
+            "fine_tuning_offset_ghz": _s16(PAGE12_FINE_TUNING_OFFSET_BASE, lane) * 0.001,
+            "current_laser_frequency_ghz": _u32(PAGE12_LASER_FREQUENCY_BASE, lane) * 0.001,
+            "target_output_power_dbm": _s16(PAGE12_TARGET_OUTPUT_POWER_BASE, lane) * 0.01,
+            "tuning_in_progress": bool((status_byte >> 1) & 0x1),
+            "wavelength_unlock_status": bool(status_byte & 0x1),
+            "flags": {name: bool((flags_byte >> bit) & 0x1) for bit, name in PAGE12_FLAG_BIT_NAMES.items()},
+            "masks": {name: bool((masks_byte >> bit) & 0x1) for bit, name in PAGE12_FLAG_BIT_NAMES.items()},
+        }
+    return lanes
+
+
+# --- Page 13h: Module Performance Diagnostics Control (Section 8.11) -----
+# Optional, advertised jointly with Page 14h via Page 01h's
+# diagnostic_pages_supported bit (byte 142 bit 5).
+PAGE13_LOOPBACK_CAPABILITIES_BYTE = 0x80  # byte 128
+PAGE13_LOOPBACK_CAP_BIT_NAMES = {
+    6: "simultaneous_host_and_media_side", 5: "per_lane_media_side",
+    4: "per_lane_host_side", 3: "host_side_input", 2: "host_side_output",
+    1: "media_side_input", 0: "media_side_output",
+}
+# Loopback Controls (Table 8-109): 1 byte per direction, bit i = lane i+1.
+PAGE13_LOOPBACK_MEDIA_OUTPUT_BYTE = 0xB4  # byte 180
+PAGE13_LOOPBACK_MEDIA_INPUT_BYTE = 0xB5   # byte 181
+PAGE13_LOOPBACK_HOST_OUTPUT_BYTE = 0xB6   # byte 182
+PAGE13_LOOPBACK_HOST_INPUT_BYTE = 0xB7    # byte 183
+
+
+def parse_page13_loopback_capabilities(byte128):
+    """Decode Page 13h byte 128 (Table 8-89)."""
+    return {name: bool((byte128 >> bit) & 0x1) for bit, name in PAGE13_LOOPBACK_CAP_BIT_NAMES.items()}
+
+
+def parse_page13_loopback_controls(data):
+    """Decode Page 13h's current loopback-enable state (bytes 180-183,
+    Table 8-109) into 4 dicts of {lane: bool}. `data` must be exactly 128
+    bytes starting at 0x80. Read-only use in this project -- actually
+    enabling loopback is traffic-affecting and this project doesn't drive
+    it live without explicit opt-in (see test_page13_loopback.py)."""
+    if len(data) < 128:
+        raise ValueError(f"expected 128 bytes of Page 13h, got {len(data)}")
+
+    def _per_lane(byte_offset):
+        byte_val = data[byte_offset - UPPER_MEMORY_BASE]
+        return {lane: bool((byte_val >> (lane - 1)) & 0x1) for lane in range(1, 9)}
+
+    return {
+        "media_side_output_loopback": _per_lane(PAGE13_LOOPBACK_MEDIA_OUTPUT_BYTE),
+        "media_side_input_loopback": _per_lane(PAGE13_LOOPBACK_MEDIA_INPUT_BYTE),
+        "host_side_output_loopback": _per_lane(PAGE13_LOOPBACK_HOST_OUTPUT_BYTE),
+        "host_side_input_loopback": _per_lane(PAGE13_LOOPBACK_HOST_INPUT_BYTE),
+    }
+
+
+# --- Page 14h: Module Performance Diagnostics Results (Section 8.12) -----
+PAGE14_DIAGNOSTICS_SELECTOR_BYTE = 0x80  # byte 128, RWW
+PAGE14_LOSS_OF_REF_CLOCK_BYTE = 0x84     # byte 132, bit 7
+PAGE14_DIAGNOSTICS_DATA_BASE = 0xC0      # bytes 192-255 (64 bytes)
+
+DIAG_SELECTOR_NONE = 0x00
+DIAG_SELECTOR_BER_REALTIME = 0x01
+DIAG_SELECTOR_HOST_COUNTERS_1_4 = 0x02
+DIAG_SELECTOR_HOST_COUNTERS_5_8 = 0x03
+DIAG_SELECTOR_MEDIA_COUNTERS_1_4 = 0x04
+DIAG_SELECTOR_MEDIA_COUNTERS_5_8 = 0x05
+DIAG_SELECTOR_SNR_REALTIME = 0x06
+DIAG_SELECTOR_BER_GATED = 0x11
+DIAG_SELECTOR_HOST_COUNTERS_1_4_GATED = 0x12
+DIAG_SELECTOR_HOST_COUNTERS_5_8_GATED = 0x13
+DIAG_SELECTOR_MEDIA_COUNTERS_1_4_GATED = 0x14
+DIAG_SELECTOR_MEDIA_COUNTERS_5_8_GATED = 0x15
+DIAG_SELECTOR_NAMES = {
+    DIAG_SELECTOR_NONE: "None (all zero)",
+    DIAG_SELECTOR_BER_REALTIME: "Host/Media Input Lane 1-8 BER (F16, real-time)",
+    DIAG_SELECTOR_HOST_COUNTERS_1_4: "Host Lane 1-4 error/bit counters",
+    DIAG_SELECTOR_HOST_COUNTERS_5_8: "Host Lane 5-8 error/bit counters",
+    DIAG_SELECTOR_MEDIA_COUNTERS_1_4: "Media Lane 1-4 error/bit counters",
+    DIAG_SELECTOR_MEDIA_COUNTERS_5_8: "Media Lane 5-8 error/bit counters",
+    DIAG_SELECTOR_SNR_REALTIME: "Host/Media Input Lane 1-8 SNR (U16, 1/256 dB, real-time)",
+    DIAG_SELECTOR_BER_GATED: "Host/Media Input Lane 1-8 BER (gated)",
+    DIAG_SELECTOR_HOST_COUNTERS_1_4_GATED: "Host Lane 1-4 error/bit counters (gated)",
+    DIAG_SELECTOR_HOST_COUNTERS_5_8_GATED: "Host Lane 5-8 error/bit counters (gated)",
+    DIAG_SELECTOR_MEDIA_COUNTERS_1_4_GATED: "Media Lane 1-4 error/bit counters (gated)",
+    DIAG_SELECTOR_MEDIA_COUNTERS_5_8_GATED: "Media Lane 5-8 error/bit counters (gated)",
+}
+_DIAG_SELECTOR_COUNTER_SET = {
+    DIAG_SELECTOR_HOST_COUNTERS_1_4, DIAG_SELECTOR_HOST_COUNTERS_5_8,
+    DIAG_SELECTOR_MEDIA_COUNTERS_1_4, DIAG_SELECTOR_MEDIA_COUNTERS_5_8,
+    DIAG_SELECTOR_HOST_COUNTERS_1_4_GATED, DIAG_SELECTOR_HOST_COUNTERS_5_8_GATED,
+    DIAG_SELECTOR_MEDIA_COUNTERS_1_4_GATED, DIAG_SELECTOR_MEDIA_COUNTERS_5_8_GATED,
+}
+
+
+def parse_page14_error_counters(diagnostics_data):
+    """Decode the 64-byte Diagnostics Data window when DiagnosticsSelector
+    is one of the 4-lane error/bit-counter selectors (Table 8-116): 4
+    lanes x (8-byte little-endian ErrorCount U64 + 8-byte little-endian
+    TotalBitsCount U64). An ODD TotalBitsCount means the pattern checker
+    lost sync at least once during the count (its LSB is a sync-loss
+    indicator, not a real bit of the count, per the spec's own note) --
+    reported here as `sync_loss_indicated`, with the raw odd/even value
+    still returned as `total_bits_count` unmodified.
+    """
+    if len(diagnostics_data) < 64:
+        raise ValueError(f"expected 64 bytes of Diagnostics Data, got {len(diagnostics_data)}")
+
+    lanes = []
+    for lane in range(4):
+        base = lane * 16
+        error_count = int.from_bytes(diagnostics_data[base:base + 8], "little")
+        total_bits = int.from_bytes(diagnostics_data[base + 8:base + 16], "little")
+        lanes.append({
+            "error_count": error_count,
+            "total_bits_count": total_bits,
+            "sync_loss_indicated": bool(total_bits & 0x1),
+        })
+    return lanes
+
+
+def parse_page14_status(data):
+    """Decode Page 14h's selector register and loss-of-reference-clock
+    flag; dispatches the 64-byte Diagnostics Data window to
+    parse_page14_error_counters() for the 8 selectors where this project
+    has a confirmed, non-float decode (see DIAG_SELECTOR_NAMES) -- the
+    BER/SNR selectors use CMIS's own F16/scaled-U16 formats, not
+    implemented here, so their windows come back as raw bytes only.
+    `data` must be exactly 128 bytes starting at 0x80.
+    """
+    if len(data) < 128:
+        raise ValueError(f"expected 128 bytes of Page 14h, got {len(data)}")
+
+    selector = data[PAGE14_DIAGNOSTICS_SELECTOR_BYTE - UPPER_MEMORY_BASE]
+    loss_of_ref_clock = bool((data[PAGE14_LOSS_OF_REF_CLOCK_BYTE - UPPER_MEMORY_BASE] >> 7) & 0x1)
+    window_start = PAGE14_DIAGNOSTICS_DATA_BASE - UPPER_MEMORY_BASE
+    window = data[window_start:window_start + 64]
+
+    result = {
+        "selector": selector,
+        "selector_name": DIAG_SELECTOR_NAMES.get(selector, "reserved/custom"),
+        "loss_of_reference_clock": loss_of_ref_clock,
+        "raw_diagnostics_data": window,
+    }
+    if selector in _DIAG_SELECTOR_COUNTER_SET:
+        result["lane_counters"] = parse_page14_error_counters(window)
+    return result
+
+
+# --- Page 16h: Network Path Functionality (Section ~8.16, CMIS 5.1+) -----
+# Optional, advertised via Page 01h's network_path_pages_supported bit
+# (byte 142 bit 7). Confirmed byte-identical across 5.1-5.3. Mirrors Page
+# 10h/11h's Data Path Control/Status pattern but for "Network Path"
+# (multiplex-media) lanes -- same DPDeinit-style control byte, same
+# 4-bit-per-lane packed status field, different state-name set.
+PAGE16_NP_CONTROL_BYTE = 0xA0           # byte 160: NPDeinitLane<i>, bit i-1 = lane i
+PAGE16_NP_STATUS_BYTES = (0xC8, 0xC9, 0xCA, 0xCB)  # bytes 200-203, 4 bits/lane packed
+
+NP_STATE_DEACTIVATED = 0x1
+NP_STATE_INIT = 0x2
+NP_STATE_DEINIT = 0x3
+NP_STATE_ACTIVATED = 0x4
+NP_STATE_TX_TURN_ON = 0x5
+NP_STATE_TX_TURN_OFF = 0x6
+NP_STATE_INITIALIZED = 0x7
+NP_STATE_NAMES = {
+    NP_STATE_DEACTIVATED: "NPDeactivated", NP_STATE_INIT: "NPInit",
+    NP_STATE_DEINIT: "NPDeinit", NP_STATE_ACTIVATED: "NPActivated",
+    NP_STATE_TX_TURN_ON: "NPTxTurnOn", NP_STATE_TX_TURN_OFF: "NPTxTurnOff",
+    NP_STATE_INITIALIZED: "NPInitialized",
+}
+
+
+def parse_page16_network_path_status(data):
+    """Decode Page 16h's per-lane Network Path state (bytes 200-203,
+    4 bits/lane packed 2/byte, same packing convention as Page 11h's
+    DPState). `data` must be exactly 128 bytes starting at 0x80."""
+    if len(data) < 128:
+        raise ValueError(f"expected 128 bytes of Page 16h, got {len(data)}")
+
+    states = {}
+    for byte_i, offset in enumerate(PAGE16_NP_STATUS_BYTES):
+        byte_val = data[offset - UPPER_MEMORY_BASE]
+        states[byte_i * 2 + 1] = byte_val & 0xF
+        states[byte_i * 2 + 2] = (byte_val >> 4) & 0xF
+    return states
+
+
+def build_np_deinit(lane_bits):
+    """Build Page 16h's NP Control byte (160) -- same bit convention as
+    build_dp_deinit()."""
+    return lane_bits & 0xFF
+
+
+# --- Page 17h: Network Path Flags/Masks (CMIS 5.1+) -----------------------
+# Despite the page's generic name, confirmed to be used EXCLUSIVELY for
+# Network Path flags/masks through CMIS 5.3 -- no other feature's
+# flags/masks were ever added here.
+PAGE17_NP_STATE_CHANGED_FLAG_BYTE = 0x80   # byte 128, bit i-1 = lane i, RO/COR
+PAGE17_NP_STATE_CHANGED_MASK_BYTE = 0xC0   # byte 192, same bits, RW
+
+
+def parse_page17_np_flags(data):
+    """Decode Page 17h's NPStateChangedFlag bits. `data` must be exactly
+    128 bytes starting at 0x80."""
+    if len(data) < 128:
+        raise ValueError(f"expected 128 bytes of Page 17h, got {len(data)}")
+    byte_val = data[PAGE17_NP_STATE_CHANGED_FLAG_BYTE - UPPER_MEMORY_BASE]
+    return {lane: bool((byte_val >> (lane - 1)) & 0x1) for lane in range(1, 9)}
+
+
+# --- Page 19h: Data Path Configuration (Section ~8.18, CMIS 5.2+) --------
+# All RO. No single dedicated advertisement bit found -- the spec makes
+# its presence conditional on other features (Page 01h's
+# unidir_reconfig_supported bit for the Tx/Rx config fields this project
+# decodes; a separate VCS-parameter-space condition for CMIS 5.3's
+# extension, not decoded here).
+PAGE19_TX_CONFIG_BASE = 0x80   # bytes 128-135, 1 byte/lane
+PAGE19_RX_CONFIG_BASE = 0x88   # bytes 136-143, 1 byte/lane
+
+
+def parse_page19_datapath_config(data):
+    """Decode Page 19h's per-lane Tx/Rx Data Path config bytes: bits 7-4
+    AppSelCode, bits 3-1 DataPathID, bit 0 ExplicitControl. `data` must
+    be exactly 128 bytes starting at 0x80."""
+    if len(data) < 128:
+        raise ValueError(f"expected 128 bytes of Page 19h, got {len(data)}")
+
+    def _per_lane(base):
+        result = {}
+        for lane in range(1, 9):
+            byte_val = data[(base - UPPER_MEMORY_BASE) + (lane - 1)]
+            result[lane] = {
+                "app_sel_code": (byte_val >> 4) & 0xF,
+                "data_path_id": (byte_val >> 1) & 0x7,
+                "explicit_control": bool(byte_val & 0x1),
+            }
+        return result
+
+    return {"tx": _per_lane(PAGE19_TX_CONFIG_BASE), "rx": _per_lane(PAGE19_RX_CONFIG_BASE)}
+
+
+# --- Page 1Ch: Normalized Application Descriptors (Section 8.20, CMIS 5.3+) --
+# All RO/static. Optional, present (per the spec's own presence
+# condition) exactly when Page 01h's nad_banks_supported > 0. Up to 15
+# NAD instances of 8 bytes each per bank; Application Number AN = 15*j+i
+# for bank index j (0-based) and AppSel <i> (1-15, this bank's page).
+PAGE1C_NAD_BASE = 0x80  # bytes 128-247, 15 x 8-byte NAD structures
+
+
+def parse_page1c_nad(data, bank_index=0):
+    """Decode Page 1Ch's 15 Normalized Application Descriptors (Table
+    8-163/8-164). `data` must be exactly 128 bytes starting at 0x80.
+    `bank_index` (0-based) is used only to compute each entry's global
+    Application Number (AN = 15*bank_index + AppSel)."""
+    if len(data) < 128:
+        raise ValueError(f"expected 128 bytes of Page 1Ch, got {len(data)}")
+
+    descriptors = []
+    for app_sel in range(1, 16):
+        base = (PAGE1C_NAD_BASE - UPPER_MEMORY_BASE) + (app_sel - 1) * 8
+        byte2, byte5 = data[base + 2], data[base + 5]
+        descriptors.append({
+            "app_sel": app_sel,
+            "application_number": 15 * bank_index + app_sel,
+            "host_interface_id": data[base + 0],
+            "media_interface_id": data[base + 1],
+            "host_lane_count": (byte2 >> 4) & 0xF,
+            "media_lane_count": byte2 & 0xF,
+            "host_lane_assignment_options": data[base + 3],
+            "media_lane_assignment_options": data[base + 4],
+            "is_network_path": bool((byte5 >> 7) & 0x1),
+        })
+    return descriptors
 
 
 # --- Page 03h: User EEPROM (Section 8.6, p.140) ---------------------------
