@@ -26,8 +26,10 @@ without hardware:
   a real but limited form of confidence: it proves the code does what
   the spec text says, not that the spec text was transcribed correctly,
   and definitely not that a real module actually behaves this way.
-- All 33 tests in `tests/` collect cleanly under pytest (no import/syntax
-  errors), but have never executed against a real `bridge` fixture.
+- All 42 tests in `tests/` collect cleanly under pytest (no import/syntax
+  errors) and all 42 PASS against `fake_cmis_module.py`'s in-memory
+  simulator (`CMIS_USE_FAKE_BRIDGE=1`, see "Dry-running" below) -- but
+  none have executed against a real `bridge` fixture / real hardware.
 
 **Treat every byte offset and field meaning as "correctly transcribed
 from the spec", not "confirmed against real silicon", until this
@@ -47,10 +49,10 @@ directly from:
 fetched and verified 2026-08-27 (302 pages, confirmed against the
 title page). Section/table/page numbers are cited in code comments next
 to each fact so anything here can be checked directly against that
-document. Newer CMIS revisions exist (5.1/5.2/5.3 were seen in search
-results) but were not fetched/verified -- if a newer revision matters
-for your module, that's worth checking before trusting this repo's
-specifics.
+document. CMIS 4.0, 5.1, 5.2, and 5.3 were subsequently also fetched and
+independently checked against this project's decoded fields -- see
+`cmis.VERSION_HISTORY` and the module-docstring citations throughout
+`cmis.py` for what was cross-checked and where.
 
 **Scope note on I3C**: despite the project name-check ("optical
 transceiver talking I2C/I3C"), CMIS never adopts I3C as a management
@@ -112,7 +114,7 @@ expected, not a code bug.
 
 **Dry-running without hardware**: `CMIS_USE_FAKE_BRIDGE=1 .venv/bin/pytest tests/`
 runs the whole suite against `fake_cmis_module.py`, an in-memory CMIS
-module simulator, instead of a real bridge. All 33 tests pass against
+module simulator, instead of a real bridge. All 42 tests pass against
 it as of this writing -- this proves the test code itself runs correctly
 end-to-end (real page-select/read/decode/assert round trips, not just
 `--collect-only`), which is a genuinely useful signal while there's no
@@ -158,6 +160,18 @@ tests/test_cdb.py       CDB (Page 9Fh + Lower Memory CdbStatus): Query Status, A
                          Module/Firmware-Management Features, Get Firmware Info,
                          plus negative-path bad-checksum/unknown-CMDID rejection tests
 tests/test_password.py  password mechanism: register-based AND CDB-based (Enter Password) unlock
+tests/test_page12_tunable_laser.py
+                         Page 12h -- per-lane grid spacing/channel/frequency/tuning status (read-only)
+tests/test_page13_loopback.py
+                         Page 13h -- loopback capabilities + confirms none active (read-only)
+tests/test_page14_diagnostics.py
+                         Page 14h -- DiagnosticsSelector mux + host-lane error/bit counters
+tests/test_page16_17_network_path.py
+                         Pages 16h/17h -- Network Path state machine + flags (5.1+)
+tests/test_page19_datapath_config.py
+                         Page 19h -- per-lane Tx/Rx Data Path config (5.2+, read-only)
+tests/test_page1c_nad.py
+                         Page 1Ch -- Normalized Application Descriptors (5.3+, read-only)
 tests/test_page_enumeration.py
                          structure-agnostic sweep of the whole known page-number space
 tests/test_advertised_vs_actual_pages.py
@@ -218,13 +232,18 @@ one this suite happened to be written against.
 ## Known gaps / coming next
 
 Coverage now spans Lower Memory (incl. CDB status), Page 00h (vendor
-info), Page 01h (advertising, fully bit-decoded), Page 02h (module +
-lane-specific thresholds), Pages 03h (user EEPROM), 10h/11h (lane
-control/status), 15h (timing), VDM (Pages 20h-2Fh), both password
-mechanisms, and a real CDB command set (Query Status, Abort, Module/
-Firmware-Management Features, Get Firmware Info, plus builders for the
-firmware-download sequence). Confirmed NOT yet covered, sourced the same
-way (primary spec text, cited, not guessed):
+info), Page 01h (advertising -- 4.0-5.3-aware, fully bit-decoded
+including the 5.1/5.2/5.3-added pages' advertisement bits), Page 02h
+(module + lane-specific thresholds), Page 03h (user EEPROM), 10h/11h
+(lane control/status), 12h (tunable laser), 13h/14h (loopback,
+diagnostics selector + error counters), 15h (timing), 16h/17h (Network
+Path, 5.1+), 19h (Data Path config, 5.2+), 1Ch (Normalized Application
+Descriptors, 5.3+), VDM (Pages 20h-2Fh), both password mechanisms, and a
+real CDB command set (Query Status, Abort, Module/Firmware-Management
+Features, Get Firmware Info, negative-path bad-checksum/unknown-CMDID
+tests, plus builders for the firmware-download sequence). Confirmed NOT
+yet covered, sourced the same way (primary spec text, cited, not
+guessed):
 
 - **CDB firmware-download sequence, actually exercised live**: builders
   exist (`build_cdb_start_firmware_download()`, `build_cdb_write_firmware_block_lpl()`,
@@ -238,12 +257,24 @@ way (primary spec text, cited, not guessed):
   generically) -- most Observable Type IDs a real module might report
   will show up as "reserved/unknown" rather than a decoded value; only
   the raw sample is available for those.
-- **Pages 05h (form-factor-specific, 5.2+), 12h (tunable laser), 13h/14h
-  (performance diagnostics control/results, loopback), 16h-19h (5.1+
-  Network Path / lane extensions), 1Ch** (5.3+ 240-Application
-  expansion) -- researched at a high level (see `cmis.VERSION_HISTORY`'s
-  citations) but not decoded in `cmis.py`. A follow-up research pass is
-  the natural next step before writing these.
+- **Page 14h's BER/SNR diagnostics selectors** (0x01/0x06 and their
+  gated variants) use CMIS's own F16 (BER) and scaled-U16 (SNR) formats
+  -- not implemented; only the 4-lane U64 error/bit-counter selectors
+  (0x02-0x05, 0x12-0x15) are decoded, since those are plain integers.
+- **Page 05h** (form-factor-specific signals, 5.2+): confirmed to have
+  **no byte/bit layout in any of the four fetched CMIS primary spec
+  documents (4.0-5.3)** -- it's defined in a separate, at-research-time
+  unpublished supplement (`OIF-CMIS-FF-01.0`). Only presence (via Page
+  01h byte 142 bit 3) is decodable; content decoding is blocked on that
+  supplement becoming available, not on further effort here.
+- **Page 18h**: reserved-but-empty in CMIS 5.2 (literally "reserved for
+  expansion of Page 10h," no fields); gains real content only in CMIS
+  5.3 (NAD block indices + an external "Versatile Control Set" parameter
+  space, itself a separate spec) -- not decoded, since it's either empty
+  or depends on another unfetched supplement depending on revision.
+- **Page 19h's CMIS 5.3 extension** (NAD block indices, ACS Versatile
+  Control Set parameter space at bytes 144-207) -- only the base Tx/Rx
+  config fields (bytes 128-143, unchanged since 5.2) are decoded.
 - **CDB checksum algorithm caveat**: the spec's prose calls CdbChkCode a
   "one's complement," but the one worked example available (0004h Abort,
   fixed CdbChkCode=FCh) only checks out as a negation
@@ -257,6 +288,10 @@ way (primary spec text, cited, not guessed):
   transcription slip in that research pass reusing 0004h's value, not a
   real inconsistency, but flagged rather than silently trusted since it
   wasn't independently re-verified against the primary table.
+- **`vcs_supported` (Page 01h byte 162 bit 7)**: the field's exact name
+  wasn't captured verbatim by the research pass that found it (inferred
+  from context as gating the Versatile Control Set parameter space) --
+  lower confidence than the rest of this file's Page 01h bit decoding.
 - **Page 01h fiber-length/wavelength/module-characteristic advertising**
   (bytes 132-190+, beyond the specific bits this project decodes) --
   `parse_page01_advertising()` only decodes what current tests use.
