@@ -26,8 +26,8 @@ without hardware:
   a real but limited form of confidence: it proves the code does what
   the spec text says, not that the spec text was transcribed correctly,
   and definitely not that a real module actually behaves this way.
-- All 49 tests in `tests/` collect cleanly under pytest (no import/syntax
-  errors) and 48 PASS + 1 correctly SKIPS against `fake_cmis_module.py`'s
+- All 50 tests in `tests/` collect cleanly under pytest (no import/syntax
+  errors) and 49 PASS + 1 correctly SKIPS against `fake_cmis_module.py`'s
   in-memory simulator (`CMIS_USE_FAKE_BRIDGE=1`, see "Dry-running"
   below) -- but none have executed against a real `bridge` fixture /
   real hardware.
@@ -115,7 +115,7 @@ expected, not a code bug.
 
 **Dry-running without hardware**: `CMIS_USE_FAKE_BRIDGE=1 .venv/bin/pytest tests/`
 runs the whole suite against `fake_cmis_module.py`, an in-memory CMIS
-module simulator, instead of a real bridge. 48 of 49 tests pass against
+module simulator, instead of a real bridge. 49 of 50 tests pass against
 it as of this writing (1 correctly skips, a Flat-memory-only check
 against a simulator that reports Paged) -- this proves the test code
 itself runs correctly
@@ -285,23 +285,18 @@ guessed):
 - **Page 19h's CMIS 5.3 extension** (NAD block indices, ACS Versatile
   Control Set parameter space at bytes 144-207) -- only the base Tx/Rx
   config fields (bytes 128-143, unchanged since 5.2) are decoded.
-- **CDB checksum algorithm caveat**: the spec's prose calls CdbChkCode a
-  "one's complement," but the one worked example available (0004h Abort,
-  fixed CdbChkCode=FCh) only checks out as a negation
-  (`(0x100 - sum) & 0xFF`), not a plain bitwise complement -- implemented
-  to match the worked example; flagged in `cmis.compute_cdb_checksum()`'s
-  docstring in case a real module disagrees. A second research pass
-  reported FIXED checksum values for 0102h (Abort Firmware Download,
-  claimed FCh) and 0107h (Complete Firmware Download, claimed F7h) that
-  do NOT recompute correctly from their own CMDID via this project's
-  negation formula (0102h computes to 0xFD, 0107h to 0xF8) -- likely a
-  transcription slip in that research pass reusing 0004h's value, not a
-  real inconsistency, but flagged rather than silently trusted since it
-  wasn't independently re-verified against the primary table.
-- **`vcs_supported` (Page 01h byte 162 bit 7)**: the field's exact name
-  wasn't captured verbatim by the research pass that found it (inferred
-  from context as gating the Versatile Control Set parameter space) --
-  lower confidence than the rest of this file's Page 01h bit decoding.
+- **CDB checksum algorithm -- now resolved**: `cmis.compute_cdb_checksum()`
+  uses a plain one's complement (`(~sum) & 0xFF`), confirmed against 5
+  independent worked examples across CMIS 5.0-5.4 (0040h/0041h/0042h/
+  0102h/0107h). An earlier version of this project used a two's-
+  complement negation instead, derived from trusting CMIS 5.0's Table
+  9-6 value for 0004h Abort (FCh) at face value -- that value turned out
+  to be a documented spec erratum, corrected to FBh in every subsequent
+  revision (5.1-5.4). See `cmis.build_cdb_command()`'s docstring for the
+  full citation trail.
+- **`vcs_supported` (Page 01h byte 162 bit 7)**: confirmed as
+  `VersatileControlSetSupported` (Table 8-53, CMIS 5.3+, gates the VCS
+  parameter space on Pages 18h/19h) -- no longer an inferred name.
 - **Page 01h fiber-length/wavelength/module-characteristic advertising**
   (bytes 132-190+, beyond the specific bits this project decodes) --
   `parse_page01_advertising()` only decodes what current tests use.
