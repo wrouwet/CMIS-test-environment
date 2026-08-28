@@ -1,7 +1,7 @@
 """An in-memory CMIS module simulator, implementing the same interface as
 bridge.I2CBridge (scan/write/read/write_read/close). This is NOT a
 substitute for real hardware verification (see README's "Current status"
-section) -- it's a way to actually EXECUTE this project's ~30 test
+section) -- it's a way to actually EXECUTE this project's test
 bodies end-to-end and catch real Python bugs (wrong index math, wrong
 attribute names, off-by-one slicing) that `pytest --collect-only` and
 cmis.py's own synthetic-buffer unit checks can't, since those never run
