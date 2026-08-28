@@ -26,8 +26,8 @@ without hardware:
   a real but limited form of confidence: it proves the code does what
   the spec text says, not that the spec text was transcribed correctly,
   and definitely not that a real module actually behaves this way.
-- All 50 tests in `tests/` collect cleanly under pytest (no import/syntax
-  errors) and 49 PASS + 1 correctly SKIPS against `fake_cmis_module.py`'s
+- All 51 tests in `tests/` collect cleanly under pytest (no import/syntax
+  errors) and 49 PASS + 2 correctly SKIP against `fake_cmis_module.py`'s
   in-memory simulator (`CMIS_USE_FAKE_BRIDGE=1`, see "Dry-running"
   below) -- but none have executed against a real `bridge` fixture /
   real hardware.
@@ -115,14 +115,19 @@ expected, not a code bug.
 
 **Dry-running without hardware**: `CMIS_USE_FAKE_BRIDGE=1 .venv/bin/pytest tests/`
 runs the whole suite against `fake_cmis_module.py`, an in-memory CMIS
-module simulator, instead of a real bridge. 49 of 50 tests pass against
-it as of this writing (1 correctly skips, a Flat-memory-only check
-against a simulator that reports Paged) -- this proves the test code
-itself runs correctly
+module simulator, instead of a real bridge. 49 of 51 tests pass against
+it as of this writing (2 correctly skip by default: a Flat-memory-only
+check against a simulator that reports Paged, and the opt-in disruptive
+loopback test below) -- this proves the test code itself runs correctly
 end-to-end (real page-select/read/decode/assert round trips, not just
 `--collect-only`), which is a genuinely useful signal while there's no
 real hardware to test against. It is NOT evidence a real module behaves
 this way -- see the file's own docstring for why.
+
+**Opt-in disruptive tests**: one test (`test_page13_loopback_enable_disable_roundtrip`)
+actually enables loopback on a live module -- traffic-affecting for its
+duration, so it's skipped by default and only runs with
+`CMIS_ALLOW_DISRUPTIVE_TESTS=1 .venv/bin/pytest tests/`.
 
 ## Layout
 
