@@ -354,6 +354,11 @@ class FakeCmisModule:
                 window[lane * 2 + 1] = (raw_f16 >> 8) & 0xFF
                 window[16 + lane * 2] = raw_f16 & 0xFF
                 window[16 + lane * 2 + 1] = (raw_f16 >> 8) & 0xFF
+        elif selector == cmis.DIAG_SELECTOR_SNR_REALTIME:
+            raw_snr = int(20.5 * 256)  # 20.5 dB
+            for lane in range(8):
+                window[lane * 2:lane * 2 + 2] = raw_snr.to_bytes(2, "little")
+                window[16 + lane * 2:16 + lane * 2 + 2] = raw_snr.to_bytes(2, "little")
         page14[window_idx:window_idx + 64] = window
 
     def _handle_vdm_freeze(self, freeze_byte):

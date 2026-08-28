@@ -1039,6 +1039,7 @@ _DIAG_SELECTOR_COUNTER_SET = {
     DIAG_SELECTOR_MEDIA_COUNTERS_1_4_GATED, DIAG_SELECTOR_MEDIA_COUNTERS_5_8_GATED,
 }
 _DIAG_SELECTOR_BER_SET = {DIAG_SELECTOR_BER_REALTIME, DIAG_SELECTOR_BER_GATED}
+_DIAG_SELECTOR_SNR_SET = {DIAG_SELECTOR_SNR_REALTIME}
 
 
 def parse_page14_ber(diagnostics_data):
@@ -1068,6 +1069,24 @@ def parse_page14_ber(diagnostics_data):
     host_ber = [_f16_le(lane * 2) for lane in range(8)]
     media_ber = [_f16_le(16 + lane * 2) for lane in range(8)]
     return {"host_ber": host_ber, "media_ber": media_ber}
+
+
+def parse_page14_snr(diagnostics_data):
+    """Decode the 64-byte Diagnostics Data window when DiagnosticsSelector
+    is 0x06 (SNR, Table 8-116): Host Lane 1-8 SNR at bytes 192-207, Media
+    Lane 1-8 SNR at bytes 208-223 -- same layout as parse_page14_ber(),
+    but plain U16 little-endian, units of 1/256 dB (confirmed directly
+    from the fetched spec text, not an inference like the BER field's
+    byte order)."""
+    if len(diagnostics_data) < 32:
+        raise ValueError(f"expected at least 32 bytes of Diagnostics Data for SNR, got {len(diagnostics_data)}")
+
+    def _u16_le(offset):
+        return diagnostics_data[offset] | (diagnostics_data[offset + 1] << 8)
+
+    host_snr_db = [_u16_le(lane * 2) / 256.0 for lane in range(8)]
+    media_snr_db = [_u16_le(16 + lane * 2) / 256.0 for lane in range(8)]
+    return {"host_snr_db": host_snr_db, "media_snr_db": media_snr_db}
 
 
 def parse_page14_error_counters(diagnostics_data):
@@ -1123,6 +1142,8 @@ def parse_page14_status(data):
         result["lane_counters"] = parse_page14_error_counters(window)
     elif selector in _DIAG_SELECTOR_BER_SET:
         result["ber"] = parse_page14_ber(window)
+    elif selector in _DIAG_SELECTOR_SNR_SET:
+        result["snr"] = parse_page14_snr(window)
     return result
 
 

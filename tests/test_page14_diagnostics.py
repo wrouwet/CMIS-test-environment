@@ -66,3 +66,27 @@ def test_page14_ber(bridge, module_info):
         print(f"[cmis-discover]   host lane {lane + 1} BER: {ber['host_ber'][lane]:.3e}, "
               f"media lane {lane + 1} BER: {ber['media_ber'][lane]:.3e}")
         assert ber["host_ber"][lane] >= 0.0 and ber["media_ber"][lane] >= 0.0
+
+
+def test_page14_snr(bridge, module_info):
+    """Select the SNR selector and decode it -- plain scaled U16, no F16
+    involved (unlike BER), and this byte-order/scale was confirmed
+    directly from the fetched spec text rather than inferred."""
+    if module_info["memory_model"] == cmis.MEMORY_MODEL_FLAT:
+        pytest.skip("module reports Flat Memory model -- Page 14h isn't supported (Table 8-4)")
+
+    cmis_helpers.select_page(bridge, bank=0x00, page=cmis.PAGE_ADVERTISING)
+    advertising = cmis.parse_page01_advertising(cmis_helpers.read_upper_memory(bridge))
+    if not advertising["diagnostic_pages_supported"]:
+        pytest.skip("module does not advertise Pages 13h/14h (Page 01h byte 142 bit 5 = 0)")
+
+    status = cmis_helpers.read_page14_status(bridge, selector=cmis.DIAG_SELECTOR_SNR_REALTIME)
+    if status["selector"] != cmis.DIAG_SELECTOR_SNR_REALTIME:
+        print(f"[cmis-discover] module reverted the SNR selector write (reads back as "
+              f"{status['selector']:#04x}) -- likely doesn't support this selector value")
+        return
+
+    snr = status["snr"]
+    for lane in range(8):
+        print(f"[cmis-discover]   host lane {lane + 1} SNR: {snr['host_snr_db'][lane]:.2f}dB, "
+              f"media lane {lane + 1} SNR: {snr['media_snr_db'][lane]:.2f}dB")
