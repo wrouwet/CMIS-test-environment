@@ -26,7 +26,7 @@ without hardware:
   a real but limited form of confidence: it proves the code does what
   the spec text says, not that the spec text was transcribed correctly,
   and definitely not that a real module actually behaves this way.
-- All 5 tests in `tests/` collect cleanly under pytest (no import/syntax
+- All 15 tests in `tests/` collect cleanly under pytest (no import/syntax
   errors), but have never executed against a real `bridge` fixture.
 
 **Treat every byte offset and field meaning as "correctly transcribed
@@ -53,11 +53,28 @@ for your module, that's worth checking before trusting this repo's
 specifics.
 
 **Scope note on I3C**: despite the project name-check ("optical
-transceiver talking I2C/I3C"), CMIS Rev 5.0 defines I2C as its only
-management transport -- the full spec text was searched for "I3C" and
-returned zero hits; Appendix B explicitly says only an I2C-based
-variant is described in this revision. I3C support may exist in a later
-CMIS revision, not yet researched. **This project is I2C-only for now.**
+transceiver talking I2C/I3C"), CMIS never adopts I3C as a management
+transport, in any revision -- confirmed by grepping the full text of
+4.0, 5.0, 5.1, 5.2, and 5.3, zero "I3C" hits in any of them. I2C
+("I2CMCI") is the sole transport through 5.2. Revision 5.3
+(OIF-CMIS-05.3, 2024-09-04) adds a second transport, but it's SPI
+("SPIMCI", for co-packaged-optics use cases) -- not I3C, and it uses a
+dedicated per-module chip-select wire rather than any form of shared-bus
+addressing. **This project is I2C-only, and expects to stay that way.**
+
+**Version compatibility**: CMIS 3.0/4.0/5.0/5.1 were QSFP-DD MSA
+documents merely hosted by OIF; from 5.2 onward OIF itself publishes
+CMIS as a formal Implementation Agreement (`OIF-CMIS-05.x`). The spec's
+own compatibility rule (Appendix G): revisions sharing a major number
+are backward-compatible (5.0/5.1/5.2/5.3 implementations are all
+mutually compatible); the one real breaking change in the whole
+lineage is 4.0->5.0, where the spec itself warns interoperability
+"may or may not" work. Everything this project currently decodes was
+independently confirmed byte-identical across the 4.0 and 5.3 documents
+-- see `cmis.py`'s module docstring and `cmis.VERSION_HISTORY` for the
+full citation trail. This is why the suite discovers-and-adapts (see
+below) rather than branching on version internally: nothing decoded so
+far actually differs by version, only by memory model.
 
 ## What you need before you start
 
@@ -106,11 +123,39 @@ cmis_helpers.py         Shared register-read/page-select plumbing built
 conftest.py             pytest fixture that connects the bridge once per session
 tests/config.py         shared constants (module I2C address)
 tests/test_bus.py       bus presence
+tests/test_discovery.py CMIS's own on-the-wire discovery (revision, memory model) -- see below
 tests/test_lower_memory.py
                          Identifier, CMIS revision, Module State, temp/VCC monitors
 tests/test_page00_vendor_info.py
                          page selection + vendor identification block + checksum
+tests/test_page01_advertising.py
+                         capability advertisement, incl. whether CDB exists at all
+tests/test_page02_thresholds.py
+                         module-level alarm/warning threshold quads
+tests/test_datapath.py  Pages 10h/11h -- per-lane Data Path state machine
+tests/test_cdb.py       CDB (Page 9Fh) command framing + a live Query Status poll
+tests/test_password.py  password mechanism (register-based unlock)
 ```
+
+## Architecture: discover the version, don't hardcode per-version suites
+
+CMIS provides a real, on-the-wire discovery mechanism: every module
+self-reports its own CMIS revision (Lower Memory byte `0x01`) and
+whether it runs a Paged or Flat memory model (byte `0x02`, bit 7) --
+the latter directly determining which pages even exist to test. Per
+explicit user direction, this project uses that discovery mechanism
+instead of maintaining separate hardcoded test suites per CMIS version
+(4.0, 5.0, 5.2, ...): `cmis_helpers.discover_module()` reads and PRINTS
+this up front every run (via the session-scoped `module_info` fixture,
+triggered first by `tests/test_discovery.py`), and the rest of the
+suite is expected to branch or skip cleanly based on what's actually
+discovered -- not assume a specific version's behavior. As more of the
+spec gets covered (Application Advertising, Datapath pages, CDB, VDM --
+see "Known gaps" below), each new test file should gate on `module_info`
+where a page/field genuinely doesn't exist on some discovered
+version/model, printing why it's skipping, rather than either failing
+on an absent feature or silently assuming every module looks like the
+one this suite happened to be written against.
 
 ## Key CMIS facts this project relies on (see cmis.py for full citations)
 
@@ -142,6 +187,45 @@ tests/test_page00_vendor_info.py
   inference, not a confirmed fact. If a real module's checksum never
   matches, check this first before assuming the module itself is at
   fault.
+
+## Known gaps / coming next
+
+Coverage now spans Lower Memory, Page 00h (vendor info), Page 01h
+(advertising), Page 02h (thresholds), Pages 10h/11h (lane control/
+status), the password mechanism, and basic CDB command framing + a live
+Query Status poll. Confirmed NOT yet covered, sourced the same way
+(primary spec text, cited, not guessed):
+
+- **VDM** (Versatile Diagnostic Monitoring, Pages 20h-2Fh) -- confirmed
+  present in CMIS 5.0 (not a later-revision addition). Up to 256
+  monitored "instances" across 4 groups, plus a freeze/unfreeze
+  handshake (page 2Fh byte 144) for reading multi-instance statistics
+  consistently. `cmis.py` has no VDM support yet.
+- **CDB beyond Query Status/Abort framing**: the actual 4-command
+  firmware-download sequence (Get Firmware Info / Start / Write Block
+  LPL+EPL / Complete / Copy), Module/Firmware-Management Features
+  capability queries (0040h/0041h), and EPL-carried (>120 byte) command
+  payloads (Pages A0h-AFh) -- all real, cited findings, none implemented.
+  CDB commands 0107h (Complete) and 0108h (Copy) were seen referenced in
+  the spec's running text but their tables weren't extracted -- a gap
+  if firmware-update coverage gets built out.
+- **Lane-specific threshold quads** (Page 02h bytes 176-199: TxPower/
+  Bias/RxPower) and the Aux1-3 module-level quads -- `parse_page02_thresholds()`
+  only decodes Temp/VCC so far.
+- **Pages 03h (User EEPROM), 05h, 12h-15h (tunable laser, performance
+  diagnostics, timing), 16h-19h/1Ch** (5.1+ Network Path / lane
+  extensions) -- researched at a high level (see `cmis.VERSION_HISTORY`'s
+  citations) but not decoded in `cmis.py`.
+- **CDB checksum algorithm caveat**: the spec's prose calls CdbChkCode a
+  "one's complement," but the one worked example available (0004h Abort,
+  fixed CdbChkCode=FCh) only checks out as a negation
+  (`(0x100 - sum) & 0xFF`), not a plain bitwise complement -- implemented
+  to match the worked example; flagged in `cmis.compute_cdb_checksum()`'s
+  docstring in case a real module disagrees.
+- **SPIMCI** (the SPI transport added in CMIS 5.3) -- confirmed to exist,
+  not implemented; this project remains I2C-only by design (see "Scope
+  note on I3C" above), so this is noted for awareness, not planned work,
+  unless a real need for it shows up.
 
 ## Adding tests
 

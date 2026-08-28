@@ -14,3 +14,17 @@ def bridge():
     b = I2CBridge()
     yield b
     b.close()
+
+
+@pytest.fixture(scope="session")
+def module_info(bridge):
+    """Session-scoped discovery of the module's self-reported CMIS
+    revision and memory model -- see cmis_helpers.discover_module().
+    Read and printed once per session (these are identity facts, not
+    something expected to change mid-run); tests needing to gate
+    behavior on the discovered version/capabilities should depend on
+    this fixture rather than assuming a specific CMIS revision.
+    """
+    import cmis_helpers
+
+    return cmis_helpers.discover_module(bridge)
