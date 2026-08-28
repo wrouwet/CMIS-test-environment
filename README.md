@@ -26,7 +26,7 @@ without hardware:
   a real but limited form of confidence: it proves the code does what
   the spec text says, not that the spec text was transcribed correctly,
   and definitely not that a real module actually behaves this way.
-- All 27 tests in `tests/` collect cleanly under pytest (no import/syntax
+- All 29 tests in `tests/` collect cleanly under pytest (no import/syntax
   errors), but have never executed against a real `bridge` fixture.
 
 **Treat every byte offset and field meaning as "correctly transcribed
@@ -133,8 +133,19 @@ tests/test_page01_advertising.py
 tests/test_page02_thresholds.py
                          module-level alarm/warning threshold quads
 tests/test_datapath.py  Pages 10h/11h -- per-lane Data Path state machine
-tests/test_cdb.py       CDB (Page 9Fh) command framing + a live Query Status poll
-tests/test_password.py  password mechanism (register-based unlock)
+tests/test_page03_user_eeprom.py
+                         Page 03h -- real, non-destructive write/read/restore round trip
+tests/test_page15_timing.py
+                         Page 15h -- per-lane Rx/Tx transit latency
+tests/test_page_select_edge_cases.py
+                         page-select protocol itself: idempotency, the
+                         unsupported-page-falls-back-to-0x00 gotcha, read/write isolation
+tests/test_environmental_thresholds.py
+                         live Lower Memory monitors cross-checked against Page 02h thresholds
+tests/test_vdm.py       Pages 20h-2Fh -- VDM descriptor/sample dump + freeze/unfreeze handshake
+tests/test_cdb.py       CDB (Page 9Fh + Lower Memory CdbStatus): Query Status, Abort,
+                         Module/Firmware-Management Features, Get Firmware Info
+tests/test_password.py  password mechanism: register-based AND CDB-based (Enter Password) unlock
 ```
 
 ## Architecture: discover the version, don't hardcode per-version suites
@@ -190,38 +201,49 @@ one this suite happened to be written against.
 
 ## Known gaps / coming next
 
-Coverage now spans Lower Memory, Page 00h (vendor info), Page 01h
-(advertising), Page 02h (thresholds), Pages 10h/11h (lane control/
-status), the password mechanism, and basic CDB command framing + a live
-Query Status poll. Confirmed NOT yet covered, sourced the same way
-(primary spec text, cited, not guessed):
+Coverage now spans Lower Memory (incl. CDB status), Page 00h (vendor
+info), Page 01h (advertising, fully bit-decoded), Page 02h (module +
+lane-specific thresholds), Pages 03h (user EEPROM), 10h/11h (lane
+control/status), 15h (timing), VDM (Pages 20h-2Fh), both password
+mechanisms, and a real CDB command set (Query Status, Abort, Module/
+Firmware-Management Features, Get Firmware Info, plus builders for the
+firmware-download sequence). Confirmed NOT yet covered, sourced the same
+way (primary spec text, cited, not guessed):
 
-- **VDM** (Versatile Diagnostic Monitoring, Pages 20h-2Fh) -- confirmed
-  present in CMIS 5.0 (not a later-revision addition). Up to 256
-  monitored "instances" across 4 groups, plus a freeze/unfreeze
-  handshake (page 2Fh byte 144) for reading multi-instance statistics
-  consistently. `cmis.py` has no VDM support yet.
-- **CDB beyond Query Status/Abort framing**: the actual 4-command
-  firmware-download sequence (Get Firmware Info / Start / Write Block
-  LPL+EPL / Complete / Copy), Module/Firmware-Management Features
-  capability queries (0040h/0041h), and EPL-carried (>120 byte) command
-  payloads (Pages A0h-AFh) -- all real, cited findings, none implemented.
-  CDB commands 0107h (Complete) and 0108h (Copy) were seen referenced in
-  the spec's running text but their tables weren't extracted -- a gap
-  if firmware-update coverage gets built out.
-- **Lane-specific threshold quads** (Page 02h bytes 176-199: TxPower/
-  Bias/RxPower) and the Aux1-3 module-level quads -- `parse_page02_thresholds()`
-  only decodes Temp/VCC so far.
-- **Pages 03h (User EEPROM), 05h, 12h-15h (tunable laser, performance
-  diagnostics, timing), 16h-19h/1Ch** (5.1+ Network Path / lane
-  extensions) -- researched at a high level (see `cmis.VERSION_HISTORY`'s
-  citations) but not decoded in `cmis.py`.
+- **CDB firmware-download sequence, actually exercised live**: builders
+  exist (`build_cdb_start_firmware_download()`, `build_cdb_write_firmware_block_lpl()`,
+  `build_cdb_copy_firmware_image()`, `build_cdb_run_firmware_image()`) but
+  no test sends them -- deliberately, since they have real, persistent
+  side effects on a live module (this would need an actual firmware
+  image and explicit opt-in, not something to run unprompted). EPL-carried
+  (>120 byte) command payloads (Pages A0h-AFh) also aren't wired up.
+- **VDM Observable Type -> Data Type table** (Table 8-122) is only
+  partially catalogued (IDs 0-2, and the 9-24 Pre-FEC BER/FERC range
+  generically) -- most Observable Type IDs a real module might report
+  will show up as "reserved/unknown" rather than a decoded value; only
+  the raw sample is available for those.
+- **Pages 05h (form-factor-specific, 5.2+), 12h (tunable laser), 13h/14h
+  (performance diagnostics control/results, loopback), 16h-19h (5.1+
+  Network Path / lane extensions), 1Ch** (5.3+ 240-Application
+  expansion) -- researched at a high level (see `cmis.VERSION_HISTORY`'s
+  citations) but not decoded in `cmis.py`. A follow-up research pass is
+  the natural next step before writing these.
 - **CDB checksum algorithm caveat**: the spec's prose calls CdbChkCode a
   "one's complement," but the one worked example available (0004h Abort,
   fixed CdbChkCode=FCh) only checks out as a negation
   (`(0x100 - sum) & 0xFF`), not a plain bitwise complement -- implemented
   to match the worked example; flagged in `cmis.compute_cdb_checksum()`'s
-  docstring in case a real module disagrees.
+  docstring in case a real module disagrees. A second research pass
+  reported FIXED checksum values for 0102h (Abort Firmware Download,
+  claimed FCh) and 0107h (Complete Firmware Download, claimed F7h) that
+  do NOT recompute correctly from their own CMDID via this project's
+  negation formula (0102h computes to 0xFD, 0107h to 0xF8) -- likely a
+  transcription slip in that research pass reusing 0004h's value, not a
+  real inconsistency, but flagged rather than silently trusted since it
+  wasn't independently re-verified against the primary table.
+- **Page 01h fiber-length/wavelength/module-characteristic advertising**
+  (bytes 132-190+, beyond the specific bits this project decodes) --
+  `parse_page01_advertising()` only decodes what current tests use.
 - **SPIMCI** (the SPI transport added in CMIS 5.3) -- confirmed to exist,
   not implemented; this project remains I2C-only by design (see "Scope
   note on I3C" above), so this is noted for awareness, not planned work,
