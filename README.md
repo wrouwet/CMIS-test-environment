@@ -26,7 +26,7 @@ without hardware:
   a real but limited form of confidence: it proves the code does what
   the spec text says, not that the spec text was transcribed correctly,
   and definitely not that a real module actually behaves this way.
-- All 29 tests in `tests/` collect cleanly under pytest (no import/syntax
+- All 33 tests in `tests/` collect cleanly under pytest (no import/syntax
   errors), but have never executed against a real `bridge` fixture.
 
 **Treat every byte offset and field meaning as "correctly transcribed
@@ -144,8 +144,13 @@ tests/test_environmental_thresholds.py
                          live Lower Memory monitors cross-checked against Page 02h thresholds
 tests/test_vdm.py       Pages 20h-2Fh -- VDM descriptor/sample dump + freeze/unfreeze handshake
 tests/test_cdb.py       CDB (Page 9Fh + Lower Memory CdbStatus): Query Status, Abort,
-                         Module/Firmware-Management Features, Get Firmware Info
+                         Module/Firmware-Management Features, Get Firmware Info,
+                         plus negative-path bad-checksum/unknown-CMDID rejection tests
 tests/test_password.py  password mechanism: register-based AND CDB-based (Enter Password) unlock
+tests/test_page_enumeration.py
+                         structure-agnostic sweep of the whole known page-number space
+tests/test_advertised_vs_actual_pages.py
+                         cross-checks Page 01h advertisement bits against actual selectability
 ```
 
 ## Architecture: discover the version, don't hardcode per-version suites
