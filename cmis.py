@@ -481,6 +481,19 @@ def verify_page01_checksum(data):
 # Alarm, High Warning, Low Warning (8 bytes per monitored quantity).
 PAGE02_TEMP_THRESHOLDS = 0x80    # signed, 1/256 degC
 PAGE02_VCC_THRESHOLDS = 0x88     # unsigned, 100uV
+# Aux1/Aux2/Aux3 (signed -- meaning is TEC current OR laser temperature
+# depending on module configuration, per Table 8-54; this project doesn't
+# know which for a given module, so these are decoded as raw signed
+# values with no fixed physical unit assigned) and Custom (module-vendor-
+# defined, decoded as raw signed here too). Offsets are an INFERENCE from
+# the sequential 8-bytes-per-quantity stride established by Temp/VCC
+# (0x80, 0x88, ...) landing exactly on the lane-specific range's start
+# (0xB0/176) after 6 quantities x 8 bytes = 48 bytes (128-175) -- not an
+# independently re-confirmed byte-offset table for these specific three.
+PAGE02_AUX1_THRESHOLDS = 0x90
+PAGE02_AUX2_THRESHOLDS = 0x98
+PAGE02_AUX3_THRESHOLDS = 0xA0
+PAGE02_CUSTOM_THRESHOLDS = 0xA8
 # Lane-specific quads, bytes 176-199 (Table 8-55): three quantities x 8
 # bytes = 24 bytes, exactly filling the range. Byte ORDER within the
 # range (TxPower, then Bias, then RxPower) is an INFERENCE from the
@@ -520,12 +533,20 @@ def parse_page02_thresholds(data):
 
     temp = _parse_threshold_quad(data, PAGE02_TEMP_THRESHOLDS, signed=True)
     vcc = _parse_threshold_quad(data, PAGE02_VCC_THRESHOLDS, signed=False)
+    aux1 = _parse_threshold_quad(data, PAGE02_AUX1_THRESHOLDS, signed=True)
+    aux2 = _parse_threshold_quad(data, PAGE02_AUX2_THRESHOLDS, signed=True)
+    aux3 = _parse_threshold_quad(data, PAGE02_AUX3_THRESHOLDS, signed=True)
+    custom = _parse_threshold_quad(data, PAGE02_CUSTOM_THRESHOLDS, signed=True)
     tx_power = _parse_threshold_quad(data, PAGE02_TX_POWER_THRESHOLDS, signed=False)
     bias = _parse_threshold_quad(data, PAGE02_BIAS_THRESHOLDS, signed=False)
     rx_power = _parse_threshold_quad(data, PAGE02_RX_POWER_THRESHOLDS, signed=False)
     return {
         "temp_c": {k: v / 256.0 for k, v in temp.items()},
         "vcc_v": {k: v * 100e-6 for k, v in vcc.items()},
+        "aux1_raw": aux1,  # TEC current or laser temp, module-config-dependent -- unscaled
+        "aux2_raw": aux2,
+        "aux3_raw": aux3,
+        "custom_raw": custom,
         "tx_power_uw": {k: v * 0.1 for k, v in tx_power.items()},
         "bias_ua": {k: v * 2 for k, v in bias.items()},  # assumes multiplier=1, not decoded
         "rx_power_uw": {k: v * 0.1 for k, v in rx_power.items()},
